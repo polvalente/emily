@@ -44,6 +44,17 @@
   the composed-defn path — useful in soak runs to spot silent
   regressions after a Bumblebee bump.
 
+### Fixed
+
+- `mix docs` no longer emits autolinker warnings for the
+  `Emily.Backend.block/4` and `Nx.Defn.Expr.optional/3` references
+  in the `Emily.Fast` and `Emily.Fast.Block` moduledocs. The
+  references resolved to `@doc false` callees (the backend callback
+  is hidden by `Nx.Backend`, and `optional/3` was removed in Nx 0.12);
+  the prose stays, the `Mod.fun/arity` shape is broken up so the
+  autolinker no longer follows it. Same pattern as the earlier
+  fix in `ee32c7c`.
+
 ### Removed
 
 - `{:f8_e4m3fn, 8}` (introduced in Nx 0.11) is rejected at the

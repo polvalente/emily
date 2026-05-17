@@ -4,7 +4,7 @@ defmodule Emily.Fast do
 
   Each function here emits a `Nx.block/4` node carrying an
   `Emily.Fast.Block.*` struct. Under Emily the Defn evaluator
-  dispatches to `Emily.Backend.block/4`, which calls the matching
+  dispatches to `Emily.Backend` `block/4`, which calls the matching
   `mx::fast::*` kernel directly. Under any other backend the
   composed-defn fallback runs and produces a mathematically
   equivalent result. That means Bumblebee models rewritten to use
@@ -17,10 +17,10 @@ defmodule Emily.Fast do
   Each helper wraps `Nx.block(struct, args, output, fun)`, where
   `struct` is one of the `Emily.Fast.Block.*` structs that carries
   the helper's static configuration (eps, dims, scale, …). At eval
-  time `Emily.Backend.block/4` pattern-matches on the struct and
+  time `Emily.Backend` `block/4` pattern-matches on the struct and
   dispatches to the matching `mx::fast::*` NIF; other backends fall
   through to `fun`, which runs the composed-defn fallback. This is
-  the Nx 0.12 successor to `Nx.Defn.Expr.optional/3` and is the same
+  the Nx 0.12 successor to `Nx.Defn.Expr` `optional/3` and is the same
   extension point EXLA uses for its native ops.
 
   ## Tensor vs option arguments

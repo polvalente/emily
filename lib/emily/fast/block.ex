@@ -3,7 +3,7 @@ defmodule Emily.Fast.Block do
   Block-dispatch structs for `Emily.Fast.*` fused kernels.
 
   Each `Emily.Fast.*` helper emits an `Nx.block/4` node carrying one
-  of these structs. `Emily.Backend.block/4` pattern-matches on the
+  of these structs. `Emily.Backend` `block/4` pattern-matches on the
   struct to call the matching `mx::fast::*` NIF; non-Emily backends
   fall through to the default `fun` supplied by `Nx.block/4`, which
   runs the composed-defn fallback baked into each helper.
