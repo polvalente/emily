@@ -22,8 +22,6 @@ defmodule Emily.MixProject do
     {:jit, "macos-arm64"}
   ]
 
-  require Logger
-
   def project do
     [
       app: @app,
