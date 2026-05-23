@@ -365,10 +365,12 @@ standard `Bumblebee.Text.generation/4` serving.
 
 - **`Emily.Quantization.dequantize_defn/1`** (`lib/emily/quantization.ex`)
   — defn-native analogue of `QuantizedWeight.to_dense/1`, built from
-  `Nx.right_shift` / `Nx.bitwise_and` / multiply / add. Supports
-  `bits ∈ {2, 4, 8}` (lanes-per-u32 is integral). `bits ∈ {3, 6}`
-  (cross-u32 packing) is out of scope — the Native path remains for
-  those.
+  `Nx.right_shift` / `Nx.bitwise_and` / multiply / add. M10.5 shipped
+  `bits ∈ {2, 4, 8}` only (lanes-per-u32 is integral); a later patch
+  extended the path to `bits ∈ {2, 3, 4, 6, 8}` by adding a u64-pair
+  bitstream unpacker that handles the cross-u32 packing used by
+  `bits ∈ {3, 6}`. See the **post-M10.5 note** below for the deferred
+  scope that landed.
 - **`Emily.Quantization.Layers.quantized_dense/4`**
   (`lib/emily/quantization/layers.ex`) — Axon-compatible layer op
   (`deftransform` → `defnp`). Pattern-matches on `%QuantizedWeight{}`,
@@ -424,6 +426,22 @@ hurts a real workload after M11.
   lands, adds a second conformance test that loads real
   `Qwen/Qwen3-0.6B-AWQ` weights end-to-end.
 - Optional upstream contribution to `deps/bumblebee` for AWQ loading.
+
+**Post-M10.5 note — cross-u32 bit widths landed.**
+The M10.5 narrative above bounded the defn-native path to
+`bits ∈ {2, 4, 8}` because those widths divide 32 cleanly and
+unpack via a single broadcast-shift + mask. `bits ∈ {3, 6}` were
+left on the Native path on the grounds that "cross-u32 packing is
+out of scope". A later patch removed that restriction by adding a
+second unpack helper (`unpack_cross_word_lanes/2` in
+`lib/emily/quantization.ex`) that reads each lane's two adjacent
+u32 words as a u64, shifts by `rem(i * bits, 32)`, and masks.
+`Emily.Quantization.defn_supported_bits/0` now returns
+`[2, 3, 4, 6, 8]` and `Emily.Quantization.Transform` picks the
+expanded set up automatically. Round-trip equality vs.
+`QuantizedWeight.to_dense/1` is covered for every supported
+`{bits, group_size}` combo on both `Emily.Backend` and
+`Nx.BinaryBackend`.
 
 ### M11 — `mlx::fast::*` fused kernels
 

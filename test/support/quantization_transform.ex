@@ -8,7 +8,8 @@ defmodule Emily.Quantization.Transform do
   Options (see `quantize/3`, `quantize_dense_layers/2`,
   `quantize_model_state/3`):
 
-    * `:bits` — one of `#{inspect([2, 4, 8])}` (defn-native path).
+    * `:bits` — one of `#{inspect(Emily.Quantization.defn_supported_bits())}`
+      (defn-native path).
       Default `4`.
     * `:group_size` — elements per quantization group. Default `128`.
     * `:transpose` — default `true`. Groups run along the reduction
@@ -204,8 +205,7 @@ defmodule Emily.Quantization.Transform do
     unless opts[:bits] in supported do
       raise ArgumentError,
             "Emily.Quantization.Transform: :bits must be one of " <>
-              "#{inspect(supported)} (defn-native dequantize supports " <>
-              "integral lanes-per-u32). Got: #{inspect(opts[:bits])}"
+              "#{inspect(supported)}. Got: #{inspect(opts[:bits])}"
     end
 
     unless is_integer(opts[:group_size]) and opts[:group_size] > 0 do
