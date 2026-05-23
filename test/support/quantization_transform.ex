@@ -205,8 +205,7 @@ defmodule Emily.Quantization.Transform do
     unless opts[:bits] in supported do
       raise ArgumentError,
             "Emily.Quantization.Transform: :bits must be one of " <>
-              "#{inspect(supported)} (defn-native dequantize supports " <>
-              "integral lanes-per-u32). Got: #{inspect(opts[:bits])}"
+              "#{inspect(supported)}. Got: #{inspect(opts[:bits])}"
     end
 
     unless is_integer(opts[:group_size]) and opts[:group_size] > 0 do

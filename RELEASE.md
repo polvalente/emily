@@ -1,5 +1,16 @@
 ### Added
 
+- `Emily.Quantization.dequantize_defn/1` now supports int3 and int6
+  weights in addition to int2/int4/int8. The new path reads each
+  lane's two adjacent u32 words as a u64, shifts by the in-word bit
+  offset, and masks — handling the cross-u32 packing MLX uses for
+  bit widths that don't divide 32 cleanly. `defn_supported_bits/0`
+  now returns `[2, 3, 4, 6, 8]`; quantized Axon graphs rewritten
+  via `Emily.Quantization.Transform` (and `Emily.Quantization.Layers.quantized_dense/4`)
+  pick the expanded set up automatically. Previously the defn path
+  rejected `bits ∈ {3, 6}` and callers had to fall back to
+  `QuantizedWeight.to_dense/1` (the Native NIF).
+
 - `ARCHITECTURE.md` — current shape of the library extracted from
   `PLAN.md`. Covers the four-layer dispatch model, the worker-thread
   + per-process-stream concurrency model, the public `Emily.Memory`

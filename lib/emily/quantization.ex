@@ -155,15 +155,19 @@ defmodule Emily.Quantization do
   from Nx primitives so it composes inside `defn` traces.
 
   This is the defn-compatible analogue of `QuantizedWeight.to_dense/1`.
-  The math is identical to MLX's `dequantize`:
+  The math is identical to MLX's `dequantize`: lane `i` is extracted
+  from the packed u32 stream at bit offset `i * bits`, masked to the
+  low `bits` bits, then `w[i] = lane * scales[g] + biases[g]` where
+  `g = div(i, group_size)` is the group index along the last axis.
 
-      w[i] = (w_q_packed >> ((i mod lpu) * bits)) & mask * scales[g] + biases[g]
+  Supported: `bits ∈ #{inspect(@defn_supported_bits)}`. Two unpack
+  paths are picked at trace time:
 
-  where `lpu = div(32, bits)` (lanes per u32), `mask = (1 <<< bits) - 1`,
-  and `g = div(i, group_size)` is the group index along the last axis.
-
-  Supported: `bits ∈ #{inspect(@defn_supported_bits)}`. `bits ∈ {3, 6}`
-  pack across u32 boundaries and use a dense bitstream unpacking path.
+    * `bits ∈ {2, 4, 8}` — integral lanes per u32, broadcast-shift
+      `w[..., :, lane] = (w_q[..., :] >> (lane * bits)) & mask`.
+    * `bits ∈ {3, 6}` — lanes cross u32 boundaries, so we read
+      adjacent u32 pairs as a u64, then shift by `rem(i * bits, 32)`
+      and mask.
 
   ## Examples
 
@@ -219,6 +223,13 @@ defmodule Emily.Quantization do
     group_size = opts[:group_size]
     bits = opts[:bits]
 
+    # `bits` must be a trace-time integer (it comes from the
+    # `%QuantizedWeight{}` `:keep` container metadata, not a tensor),
+    # so the `if` constant-folds to a single branch. The two arms
+    # return tensors of DIFFERENT ranks (integral adds a `new_axis`;
+    # cross-word preserves rank) — if a future refactor promotes
+    # `bits` to a runtime tensor, defn's cond shape-compatibility
+    # check will reject the mismatch.
     masked =
       if rem(32, bits) == 0 do
         unpack_integral_lanes(w_q, bits)
@@ -296,6 +307,24 @@ defmodule Emily.Quantization do
     shape = Nx.shape(w_q)
     rank = tuple_size(shape)
     packed = elem(shape, rank - 1)
+
+    # Invariant: `unpacked * bits == packed * 32` (no leftover bits at
+    # the end of the buffer). Equivalent to "the final lane ends
+    # exactly at the end of the final u32, so no lane in the final
+    # word straddles past it." This holds for every (bits, group_size)
+    # combo MLX accepts; `QuantizedWeight.from_dense/2` rejects shapes
+    # that violate it. The `min(&1 + 1, max_word)` clamp below is
+    # correctness-safe ONLY under this invariant — for lanes whose
+    # `next_word` is clamped to themselves, the duplicated high bits
+    # never participate because the lane's bit range fits in the
+    # current word and is masked off after the shift.
+    if rem(packed * 32, bits) != 0 do
+      raise ArgumentError,
+            "Emily.Quantization.dequantize_defn/1: packed length #{packed} " <>
+              "is incompatible with bits=#{bits} (rem(packed*32, bits) != 0). " <>
+              "MLX packing requires orig_last * bits to be a multiple of 32."
+    end
+
     unpacked = div(packed * 32, bits)
     max_word = packed - 1
 
