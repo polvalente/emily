@@ -1,5 +1,18 @@
 ### Added
 
+- `Emily.Quantization.dequantize_defn/1` now supports the `mxfp8`
+  microscaled mode in addition to `affine` and `mxfp4`. Each 8-bit
+  lane code decodes through a 256-entry FP8-E4M3 lookup table
+  precomputed via MLX's `FromFP8` bit-trick (strip sign, shift the
+  low 7 bits left by 7 to align the E4M3 exponent into f16's
+  exponent field, multiply by 256 for the bias difference, restore
+  sign). Per-group scales reuse the FP8-E8M0 decode from the mxfp4
+  path. Output dtype is bf16 to match `QuantizedWeight.to_dense/1`,
+  and the round-trip is bit-identical (max abs diff = 0.0) on
+  realistic data. `Emily.Quantization.Transform` accepts
+  `mode: "mxfp8"`; only `nvfp4` (which uses an FP8-E4M3 per-group
+  scale instead of FP8-E8M0) remains defn-unsupported.
+
 - `Emily.Quantization.dequantize_defn/1` now supports the `mxfp4`
   microscaled mode in addition to `affine`. Each 4-bit lane code
   decodes through MLX's FP4-E2M1 lookup table (`+0.0, +0.5, +1.0,
