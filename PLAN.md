@@ -443,25 +443,33 @@ expanded set up automatically. Round-trip equality vs.
 `{bits, group_size}` combo on both `Emily.Backend` and
 `Nx.BinaryBackend`.
 
-**Post-M10.5 note — microscaled mxfp4 mode landed.**
+**Post-M10.5 note — microscaled mxfp4 and mxfp8 modes landed.**
 M10.5 left the microscaled modes (`mxfp4`, `mxfp8`, `nvfp4`) on
 the Native path because they require additional decode work
-beyond integer-lane unpacking: lane codes are FP4-E2M1 indices
-into a 16-entry LUT (not raw integers), and per-group scales are
-FP8-E8M0 bytes (not floats). A follow-up patch wired `mxfp4`
-through the defn-native path by adding two precomputed LUT
-helpers (`fp4_lut/0` and `e8m0_lut/0` in
-`lib/emily/quantization.ex`): `unpack_integral_lanes/2` still
-extracts the 4-bit codes, then `Nx.take(fp4_lut, codes)` decodes
-each lane to bf16 and `Nx.take(e8m0_lut, scales)` decodes each
-per-group scale byte to bf16. Output dtype matches
-`QuantizedWeight.to_dense/1`'s bf16, and the FP4 lane values plus
-E8M0 power-of-two scales are exact in bf16 across every realistic
-scale byte, so the round-trip is bit-identical (max abs diff =
-0.0) to MLX's NIF dequant. `Emily.Quantization.Transform` gains a
-`:mode` option (default `"affine"`, accepts `"mxfp4"`); `mxfp8`
-and `nvfp4` are still defn-rejected and route through the Native
-NIF as deferred follow-ups.
+beyond integer-lane unpacking. Two follow-up patches wired the
+two FP8-E8M0-scaled variants through the defn-native path:
+
+  * **`mxfp4`** — 16-entry FP4-E2M1 lane LUT
+    (`+0.0, +0.5, +1.0, +1.5, +2.0, +3.0, +4.0, +6.0` and
+    negatives). Lane unpack reuses `unpack_integral_lanes/2` for
+    bits=4 (lpu=8); `Nx.take(fp4_lut, codes)` decodes each lane.
+  * **`mxfp8`** — 256-entry FP8-E4M3 lane LUT precomputed via
+    MLX's `FromFP8` bit-trick (strip sign, shift low 7 bits left
+    by 7 to align E4M3 exp into f16's exponent field,
+    multiply by 256 = 2^8 for the bias difference, restore sign).
+    Lane unpack reuses `unpack_integral_lanes/2` for bits=8
+    (lpu=4); `Nx.take(fp8_e4m3_lut, codes)` decodes each lane.
+
+Both modes share `e8m0_lut/0` for the per-group scale decode
+(`2^(s - 127)`) and pin output dtype to bf16 to match
+`QuantizedWeight.to_dense/1`. Because every FP4 LUT entry, every
+realistic FP8-E4M3 lane value (matched against MLX's bit-trick),
+and every FP8-E8M0 power-of-two are exact in bf16, the round-trip
+is bit-identical (max abs diff = 0.0) to MLX's NIF dequant.
+`Emily.Quantization.Transform` accepts `:mode ∈ ["affine",
+"mxfp4", "mxfp8"]` (default `"affine"`). `nvfp4` remains
+defn-rejected — it uses an FP8-E4M3 per-group scale instead of
+FP8-E8M0 and needs a separate scale LUT.
 
 ### M11 — `mlx::fast::*` fused kernels
 

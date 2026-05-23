@@ -169,11 +169,14 @@ defmodule Emily.Quantization do
       adjacent u32 pairs as a u64, then shift by `rem(i * bits, 32)`
       and mask.
 
-  Supported modes: `"affine"` and `"mxfp4"`. `mxfp4` decodes each
-  4-bit lane through MLX's FP4-E2M1 lookup table and each u8 scale
-  byte through `2^(s - 127)` (FP8-E8M0); the output dtype is `bf16`
-  to match `QuantizedWeight.to_dense/1`. `mxfp8` and `nvfp4` are not
-  yet wired and still raise — use the Native path for those.
+  Supported modes: `"affine"`, `"mxfp4"`, and `"mxfp8"`. The
+  microscaled modes share the FP8-E8M0 per-group scale decode
+  (`2^(s - 127)`); they differ in lane decode — `mxfp4` uses a
+  16-entry FP4-E2M1 LUT and `mxfp8` uses a 256-entry FP8-E4M3 LUT
+  matching MLX's `FromFP8` bit-trick. Output dtype is `bf16` to
+  match `QuantizedWeight.to_dense/1` on either microscaled mode.
+  `nvfp4` is not yet wired (its per-group scale is FP8-E4M3 instead
+  of FP8-E8M0) — use the Native path for it.
 
   ## Examples
 
@@ -201,12 +204,13 @@ defmodule Emily.Quantization do
     case mode do
       "affine" -> dequantize_impl(q, s, b, group_size: group_size, bits: bits)
       "mxfp4" -> dequantize_mxfp4_impl(q, s, group_size: group_size)
+      "mxfp8" -> dequantize_mxfp8_impl(q, s, group_size: group_size)
     end
   end
 
-  defp validate_defn_mode!(mode) when mode in ["affine", "mxfp4"], do: :ok
+  defp validate_defn_mode!(mode) when mode in ["affine", "mxfp4", "mxfp8"], do: :ok
 
-  @supported_defn_modes ~w[affine mxfp4]
+  @supported_defn_modes ~w[affine mxfp4 mxfp8]
 
   defp validate_defn_mode!(mode) do
     raise ArgumentError,
@@ -331,6 +335,70 @@ defmodule Emily.Quantization do
     # s=0 (subnormal in bf16, but realistic MLX scales never go that
     # low). Practical correctness holds for every scale MLX emits.
     values = for s <- 0..255, do: :math.pow(2.0, s - 127)
+    Nx.tensor(values, type: {:bf, 16})
+  end
+
+  # MLX `mxfp8`: bits=8 lanes packed in u32 stream (4 lanes per u32),
+  # scales=u8 FP8-E8M0 bytes (one per group of 32 lanes), no biases.
+  # Lane codes are FP8-E4M3 bytes decoded through a 256-entry LUT;
+  # scale bytes reuse the FP8-E8M0 LUT from the mxfp4 path.
+  #
+  # Output dtype is bf16 to match `QuantizedWeight.to_dense/1`.
+  defnp dequantize_mxfp8_impl(w_q, scales, opts \\ []) do
+    opts = keyword!(opts, [:group_size])
+    group_size = opts[:group_size]
+
+    # Unpack 8-bit lane codes: bits=8 → lpu=4. Result shape: (..., packed, 4).
+    lane_codes =
+      w_q
+      |> unpack_integral_lanes(8)
+      |> Nx.flatten(axes: [-2, -1])
+
+    # FP8-E4M3 decode via 256-entry LUT.
+    lanes_f = Nx.take(fp8_e4m3_lut(), lane_codes)
+
+    # Group + scale + multiply (same shape arithmetic as mxfp4).
+    grouped = group_last_axis(lanes_f, group_size)
+    scales_f = Nx.take(e8m0_lut(), scales)
+
+    dequantized = grouped * Nx.new_axis(scales_f, -1)
+    Nx.flatten(dequantized, axes: [-2, -1])
+  end
+
+  deftransformp fp8_e4m3_lut do
+    # MLX's `FromFP8` bit-trick (see `deps/mlx_src/mlx/backend/cpu/unary_ops.h`):
+    # strip the sign bit, left-shift the low 7 bits by 7 (aligning the
+    # E4M3 exponent into f16's 5-bit exponent field), reinterpret as
+    # f16, multiply by 256 (= 2^8, the bias-difference between E4M3's
+    # bias=7 and f16's bias=15), then restore the sign.
+    #
+    # The bit-trick puts MLX's E4M3 in a slightly different
+    # representation from OCP E4M3FN — in particular `0x7F` and `0xFF`
+    # decode to ±480 here rather than NaN — but the values are
+    # internally consistent with MLX's `ToFP8` quantizer, so the
+    # round-trip vs `QuantizedWeight.to_dense/1` is bit-identical.
+    import Bitwise
+
+    values =
+      for byte <- 0..255 do
+        sign? = (byte &&& 0x80) != 0
+        f16_bits = (byte &&& 0x7F) <<< 7
+
+        f16_exp = f16_bits >>> 10 &&& 0x1F
+        f16_mant = f16_bits &&& 0x3FF
+
+        raw =
+          if f16_exp == 0 do
+            # f16 subnormal: value = mant * 2^(1 - 15 - 10) = mant * 2^-24
+            f16_mant * :math.pow(2.0, -24)
+          else
+            (1 + f16_mant / 1024) * :math.pow(2.0, f16_exp - 15)
+          end
+
+        val = raw * 256.0
+        if sign?, do: -val, else: val
+      end
+
     Nx.tensor(values, type: {:bf, 16})
   end
 
