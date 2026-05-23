@@ -19,12 +19,9 @@ enqueues its work on a worker and returns immediately. The worker
 posts its result back to the caller via `enif_send` — fire-and-forget,
 no synchronous return value — and the Elixir wrapper awaits the
 message with a plain `receive`. C++ never calls into Elixir code, and
-no NIF ever blocks on a BEAM operation, so the bidirectional /
-synchronous-callback deadlock class that motivated the design (see
-[EMLX #88](https://github.com/elixir-nx/emlx/issues/88)) is
-structurally impossible. Each layer has its own oracle so a bug can
-only be introduced in the layer where its test fails — see
-[Testing philosophy](#testing-philosophy).
+no NIF ever blocks on a BEAM operation. Each layer has its own oracle
+so a bug can only be introduced in the layer where its test fails —
+see [Testing philosophy](#testing-philosophy).
 
 ## Core design decisions
 
