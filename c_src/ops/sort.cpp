@@ -23,7 +23,7 @@ fine::Term sort_nif(
     fine::ResourcePtr<Tensor> a,
     int64_t axis) {
   return async_encoded(env, w, [a = std::move(a), axis](mx::Stream &s) {
-    return wrap(mx::sort(a->array, static_cast<int>(axis), s));
+    return wrap(mx::sort(a->array, emily::checked_int(axis, "axis"), s));
   });
 }
 FINE_NIF(sort_nif, 0);
@@ -34,7 +34,7 @@ fine::Term argsort_nif(
     fine::ResourcePtr<Tensor> a,
     int64_t axis) {
   return async_encoded(env, w, [a = std::move(a), axis](mx::Stream &s) {
-    return wrap(mx::argsort(a->array, static_cast<int>(axis), s));
+    return wrap(mx::argsort(a->array, emily::checked_int(axis, "axis"), s));
   });
 }
 FINE_NIF(argsort_nif, 0);
@@ -46,8 +46,8 @@ fine::Term partition_nif(
     int64_t kth,
     int64_t axis) {
   return async_encoded(env, w, [a = std::move(a), kth, axis](mx::Stream &s) {
-    return wrap(mx::partition(a->array, static_cast<int>(kth),
-                              static_cast<int>(axis), s));
+    return wrap(mx::partition(a->array, emily::checked_int(kth, "kth"),
+                              emily::checked_int(axis, "axis"), s));
   });
 }
 FINE_NIF(partition_nif, 0);
@@ -59,8 +59,8 @@ fine::Term argpartition_nif(
     int64_t kth,
     int64_t axis) {
   return async_encoded(env, w, [a = std::move(a), kth, axis](mx::Stream &s) {
-    return wrap(mx::argpartition(a->array, static_cast<int>(kth),
-                                 static_cast<int>(axis), s));
+    return wrap(mx::argpartition(a->array, emily::checked_int(kth, "kth"),
+                                 emily::checked_int(axis, "axis"), s));
   });
 }
 FINE_NIF(argpartition_nif, 0);
@@ -72,8 +72,8 @@ fine::Term topk_nif(
     int64_t k,
     int64_t axis) {
   return async_encoded(env, w, [a = std::move(a), k, axis](mx::Stream &s) {
-    return wrap(mx::topk(a->array, static_cast<int>(k),
-                         static_cast<int>(axis), s));
+    return wrap(mx::topk(a->array, emily::checked_int(k, "k"),
+                         emily::checked_int(axis, "axis"), s));
   });
 }
 FINE_NIF(topk_nif, 0);

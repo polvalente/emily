@@ -78,8 +78,8 @@ fine::Term eye_nif(
     int64_t k,
     std::tuple<fine::Atom, int64_t> dtype) {
   return async_encoded(env, w, [n, m, k, dtype](mx::Stream &s) {
-    return wrap(mx::eye(static_cast<int>(n), static_cast<int>(m),
-                        static_cast<int>(k), to_mlx_dtype(dtype), s));
+    return wrap(mx::eye(emily::require_count(n, "n"), emily::require_count(m, "m"),
+                        emily::checked_int(k, "k"), to_mlx_dtype(dtype), s));
   });
 }
 FINE_NIF(eye_nif, 0);

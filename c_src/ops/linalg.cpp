@@ -133,8 +133,8 @@ fine::Term quantize_nif(
   return async_encoded(env, w,
       [wt = std::move(wt), group_size, bits,
        mode = std::move(mode)](mx::Stream &s) {
-        auto result = mx::quantize(wt->array, static_cast<int>(group_size),
-                                   static_cast<int>(bits), mode,
+        auto result = mx::quantize(wt->array, emily::checked_int(group_size, "group_size"),
+                                   emily::checked_int(bits, "bits"), mode,
                                    std::nullopt, s);
         auto q = wrap(std::move(result[0]));
         auto scales = wrap(std::move(result[1]));
@@ -159,8 +159,8 @@ fine::Term dequantize_nif(
        biases = std::move(biases), group_size, bits,
        mode = std::move(mode)](mx::Stream &s) {
         return wrap(mx::dequantize(w_q->array, scales->array, opt_array(biases),
-                                   static_cast<int>(group_size),
-                                   static_cast<int>(bits), mode,
+                                   emily::checked_int(group_size, "group_size"),
+                                   emily::checked_int(bits, "bits"), mode,
                                    std::nullopt, std::nullopt, s));
       });
 }
@@ -183,8 +183,8 @@ fine::Term quantized_matmul_nif(
        mode = std::move(mode)](mx::Stream &s) {
         return wrap(mx::quantized_matmul(x->array, w_q->array, scales->array,
                                          opt_array(biases), transpose,
-                                         static_cast<int>(group_size),
-                                         static_cast<int>(bits), mode, s));
+                                         emily::checked_int(group_size, "group_size"),
+                                         emily::checked_int(bits, "bits"), mode, s));
       });
 }
 FINE_NIF(quantized_matmul_nif, 0);

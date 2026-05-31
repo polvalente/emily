@@ -82,7 +82,7 @@ fine::Term take_nif(
     int64_t axis) {
   return async_encoded(env, w,
       [a = std::move(a), indices = std::move(indices), axis](mx::Stream &s) {
-        return wrap(mx::take(a->array, indices->array, static_cast<int>(axis), s));
+        return wrap(mx::take(a->array, indices->array, emily::checked_int(axis, "axis"), s));
       });
 }
 FINE_NIF(take_nif, 0);
@@ -110,7 +110,7 @@ fine::Term take_along_axis_nif(
   return async_encoded(env, w,
       [a = std::move(a), indices = std::move(indices), axis](mx::Stream &s) {
         return wrap(mx::take_along_axis(a->array, indices->array,
-                                        static_cast<int>(axis), s));
+                                        emily::checked_int(axis, "axis"), s));
       });
 }
 FINE_NIF(take_along_axis_nif, 0);
@@ -126,7 +126,7 @@ fine::Term put_along_axis_nif(
       [a = std::move(a), indices = std::move(indices),
        values = std::move(values), axis](mx::Stream &s) {
         return wrap(mx::put_along_axis(a->array, indices->array, values->array,
-                                       static_cast<int>(axis), s));
+                                       emily::checked_int(axis, "axis"), s));
       });
 }
 FINE_NIF(put_along_axis_nif, 0);
@@ -142,7 +142,7 @@ fine::Term scatter_add_axis_nif(
       [a = std::move(a), indices = std::move(indices),
        values = std::move(values), axis](mx::Stream &s) {
         return wrap(mx::scatter_add_axis(a->array, indices->array, values->array,
-                                         static_cast<int>(axis), s));
+                                         emily::checked_int(axis, "axis"), s));
       });
 }
 FINE_NIF(scatter_add_axis_nif, 0);

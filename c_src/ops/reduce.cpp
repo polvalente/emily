@@ -57,7 +57,7 @@ EMILY_REDUCE(logsumexp, mx::logsumexp)
         [a = std::move(a), axes = std::move(axes), keepdims,                   \
          ddof](mx::Stream &s) {                                                \
           return wrap(mlx_fn(a->array, to_int_vec(axes), keepdims,             \
-                             static_cast<int>(ddof), s));                      \
+                             emily::checked_int(ddof, "ddof"), s));            \
         });                                                                    \
   }                                                                            \
   FINE_NIF(op_name##_nif, 0);
@@ -74,7 +74,7 @@ fine::Term argmax_nif(
     int64_t axis,
     bool keepdims) {
   return async_encoded(env, w, [a = std::move(a), axis, keepdims](mx::Stream &s) {
-    return wrap(mx::argmax(a->array, static_cast<int>(axis), keepdims, s));
+    return wrap(mx::argmax(a->array, emily::checked_int(axis, "axis"), keepdims, s));
   });
 }
 FINE_NIF(argmax_nif, 0);
@@ -86,7 +86,7 @@ fine::Term argmin_nif(
     int64_t axis,
     bool keepdims) {
   return async_encoded(env, w, [a = std::move(a), axis, keepdims](mx::Stream &s) {
-    return wrap(mx::argmin(a->array, static_cast<int>(axis), keepdims, s));
+    return wrap(mx::argmin(a->array, emily::checked_int(axis, "axis"), keepdims, s));
   });
 }
 FINE_NIF(argmin_nif, 0);
@@ -101,7 +101,7 @@ FINE_NIF(argmin_nif, 0);
       bool inclusive) {                                                        \
     return async_encoded(env, w,                                               \
         [a = std::move(a), axis, reverse, inclusive](mx::Stream &s) {          \
-          return wrap(mlx_fn(a->array, static_cast<int>(axis), reverse,        \
+          return wrap(mlx_fn(a->array, emily::checked_int(axis, "axis"), reverse,        \
                              inclusive, s));                                   \
         });                                                                    \
   }                                                                            \

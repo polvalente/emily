@@ -92,7 +92,7 @@ fine::Term concatenate_nif(
     int64_t axis) {
   return async_encoded(env, w,
       [arrays = std::move(arrays), axis](mx::Stream &s) {
-        return wrap(mx::concatenate(unwrap_all(arrays), static_cast<int>(axis), s));
+        return wrap(mx::concatenate(unwrap_all(arrays), emily::checked_int(axis, "axis"), s));
       });
 }
 FINE_NIF(concatenate_nif, 0);
@@ -104,7 +104,7 @@ fine::Term stack_nif(
     int64_t axis) {
   return async_encoded(env, w,
       [arrays = std::move(arrays), axis](mx::Stream &s) {
-        return wrap(mx::stack(unwrap_all(arrays), static_cast<int>(axis), s));
+        return wrap(mx::stack(unwrap_all(arrays), emily::checked_int(axis, "axis"), s));
       });
 }
 FINE_NIF(stack_nif, 0);
@@ -117,8 +117,8 @@ fine::Term flatten_nif(
     int64_t end_axis) {
   return async_encoded(env, w,
       [a = std::move(a), start_axis, end_axis](mx::Stream &s) {
-        return wrap(mx::flatten(a->array, static_cast<int>(start_axis),
-                                static_cast<int>(end_axis), s));
+        return wrap(mx::flatten(a->array, emily::checked_int(start_axis, "start_axis"),
+                                emily::checked_int(end_axis, "end_axis"), s));
       });
 }
 FINE_NIF(flatten_nif, 0);
@@ -143,8 +143,8 @@ fine::Term swapaxes_nif(
     int64_t axis2) {
   return async_encoded(env, w,
       [a = std::move(a), axis1, axis2](mx::Stream &s) {
-        return wrap(mx::swapaxes(a->array, static_cast<int>(axis1),
-                                 static_cast<int>(axis2), s));
+        return wrap(mx::swapaxes(a->array, emily::checked_int(axis1, "axis1"),
+                                 emily::checked_int(axis2, "axis2"), s));
       });
 }
 FINE_NIF(swapaxes_nif, 0);
@@ -176,8 +176,8 @@ fine::Term repeat_nif(
     int64_t axis) {
   return async_encoded(env, w,
       [a = std::move(a), repeats, axis](mx::Stream &s) {
-        return wrap(mx::repeat(a->array, static_cast<int>(repeats),
-                               static_cast<int>(axis), s));
+        return wrap(mx::repeat(a->array, emily::require_count(repeats, "repeats"),
+                               emily::checked_int(axis, "axis"), s));
       });
 }
 FINE_NIF(repeat_nif, 0);
@@ -196,7 +196,7 @@ fine::Term flip_nif(
     if (ndim == 0) {
       return wrap(a->array);
     }
-    int ax = static_cast<int>(axis);
+    int ax = emily::checked_int(axis, "axis");
     if (ax < 0) {
       ax += ndim;
     }

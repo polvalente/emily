@@ -76,7 +76,7 @@ fine::Term round_nif(
     fine::ResourcePtr<Tensor> a,
     int64_t decimals) {
   return async_encoded(env, w, [a, decimals](mx::Stream &s) {
-    return wrap(mx::round(a->array, static_cast<int>(decimals), s));
+    return wrap(mx::round(a->array, emily::checked_int(decimals, "decimals"), s));
   });
 }
 FINE_NIF(round_nif, 0);

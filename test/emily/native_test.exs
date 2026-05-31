@@ -1064,6 +1064,53 @@ defmodule Emily.NativeTest do
     end
   end
 
+  # ---------- Checked integer conversions ----------
+
+  describe "checked integer conversions reject out-of-range values" do
+    test "take rejects a scalar axis outside the int range" do
+      x = f32([1.0, 2.0, 3.0], [3])
+      idx = s32([0], [1])
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.take(worker(), x, idx, 3_000_000_000)
+        end
+
+      assert err.message =~ "int range"
+    end
+
+    test "transpose rejects a vector axis entry outside the int range" do
+      x = f32([1.0, 2.0, 3.0], [3])
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.transpose(worker(), x, [3_000_000_000])
+        end
+
+      assert err.message =~ "int range"
+    end
+
+    test "eye rejects a negative dimension count" do
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.eye(worker(), -1, 3, 0, {:f, 32})
+        end
+
+      assert err.message =~ "0..INT_MAX"
+    end
+
+    test "random_split rejects a negative count" do
+      key = Native.random_key(3)
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.random_split(worker(), key, -1)
+        end
+
+      assert err.message =~ "0..INT_MAX"
+    end
+  end
+
   # ---------- Random ----------
 
   describe "random" do
