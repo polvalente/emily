@@ -333,7 +333,7 @@ defmodule Mix.Tasks.Emily.Doctor do
   defp macos_version do
     case :os.type() do
       {:unix, :darwin} ->
-        case System.cmd("sw_vers", ["-productVersion"], stderr_to_stdout: true) do
+        case System.cmd("/usr/bin/sw_vers", ["-productVersion"], stderr_to_stdout: true) do
           {version, 0} -> String.trim(version)
           _ -> :unknown
         end

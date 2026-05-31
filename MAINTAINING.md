@@ -35,6 +35,12 @@ The switch is driven by a `File.dir?("c_src")` check in mix.exs's
 `compilers/0` — the hex `package[:files]` list ships only `lib/` and
 the docs, so consumers land on the download path automatically.
 
+`EMILY_CACHE` must point at a **private, user-owned** directory: the
+source build statically links `$EMILY_CACHE/mlx-<v>-<variant>/lib/libmlx.a`
+into the NIF, so the build refuses to reuse a cache dir owned by another
+user (and keeps its own dirs `0700`) to stop a shared cache from planting
+native code. The per-user macOS/XDG defaults already satisfy this.
+
 Variant selection is unified via the `:variant` app-config key:
 in-repo builds read `EMILY_MLX_VARIANT` env var (`aot`|`jit`,
 default `aot`) through `config/config.exs` and stash the atom as
