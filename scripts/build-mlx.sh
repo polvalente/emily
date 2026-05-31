@@ -11,6 +11,12 @@
 
 set -euo pipefail
 
+# Resolve the fixed macOS system tools (uname, xcrun, sysctl, ps, id, …)
+# from the real system bin dirs regardless of a poisoned inbound $PATH.
+# The original PATH is appended so user-installed build tools (cmake,
+# ninja) still resolve.
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
+
 if [[ $# -ne 4 ]]; then
   echo "usage: $0 <mlx-src-dir> <mlx-version> <jit 0|1> <install-prefix>" >&2
   exit 2
@@ -70,8 +76,10 @@ fi
 #
 # `flock(1)` isn't shipped on macOS, so we use atomic `mkdir` as the
 # lock primitive. The lock dir is keyed on PREFIX, which both
-# contexts share. A PID file inside lets us reclaim a stale lock if
-# the previous holder died without cleanup.
+# contexts share. A token file (PID + process start time) inside lets
+# us reclaim a stale lock if the previous holder died without cleanup —
+# the start time guards against PID reuse, so a recycled PID belonging
+# to an unrelated live process is still treated as stale.
 BUILD_DIR="${PREFIX}.build"
 STAGING="${PREFIX}.staging"
 LOCK_DIR="${PREFIX}.lock"
@@ -101,24 +109,46 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Record the lock holder as "PID\n<process start time>". A recycled PID
+# (same number, different process) has a different start time, so the
+# stale-lock reclaim below can't mistake an unrelated live process for
+# the original holder — `kill -0` alone can't tell them apart.
+write_lock_token() {
+  { echo "$$"; ps -o lstart= -p "$$" 2>/dev/null; } > "$LOCK_PID_FILE"
+}
+
+# Is the recorded holder ($1=pid, $2=start time) still the live process
+# that took the lock?
+holder_is_live() {
+  local pid="$1" started="$2"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  local now
+  now=$(ps -o lstart= -p "$pid" 2>/dev/null || true)
+  [[ -n "$now" && "$now" == "$started" ]]
+}
+
 while :; do
   if mkdir "$LOCK_DIR" 2>/dev/null; then
-    echo "$$" > "$LOCK_PID_FILE"
+    write_lock_token
     acquired_lock=1
     break
   fi
 
-  holder=""
-  [[ -r "$LOCK_PID_FILE" ]] && holder=$(cat "$LOCK_PID_FILE" 2>/dev/null || true)
+  holder_pid=""
+  holder_started=""
+  if [[ -r "$LOCK_PID_FILE" ]]; then
+    { IFS= read -r holder_pid; IFS= read -r holder_started; } < "$LOCK_PID_FILE" 2>/dev/null || true
+  fi
 
-  if [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; then
-    echo "==> Reclaiming stale MLX-build lock (dead PID $holder)" >&2
+  if [[ -n "$holder_pid" ]] && ! holder_is_live "$holder_pid" "$holder_started"; then
+    echo "==> Reclaiming stale MLX-build lock (holder PID ${holder_pid} is gone)" >&2
     rm -rf "$LOCK_DIR"
     continue
   fi
 
   if (( printed_wait == 0 )); then
-    echo "==> Waiting for concurrent MLX build${holder:+ (PID $holder)} on ${PREFIX}" >&2
+    echo "==> Waiting for concurrent MLX build${holder_pid:+ (PID $holder_pid)} on ${PREFIX}" >&2
     printed_wait=1
   fi
   sleep 1

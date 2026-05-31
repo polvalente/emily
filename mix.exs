@@ -251,13 +251,52 @@ defmodule Emily.MixProject do
   defp default_cache_dir do
     case :os.type() do
       {:unix, :darwin} ->
-        {out, 0} = System.cmd("getconf", ["DARWIN_USER_CACHE_DIR"])
+        {out, 0} = System.cmd("/usr/bin/getconf", ["DARWIN_USER_CACHE_DIR"])
         Path.join(String.trim(out), "emily")
 
       _ ->
         cache_home = System.get_env("XDG_CACHE_HOME") || Path.join(System.user_home!(), ".cache")
         Path.join(cache_home, "emily")
     end
+  end
+
+  # ---------- Cache-dir trust (dev/CI source build) ----------
+
+  # The MLX install dir is statically linked into libemily, so a planted
+  # libmlx.a is arbitrary native code in the BEAM. Refuse to trust (or
+  # reuse) a cache/install dir owned by another user — the exposure is a
+  # shared EMILY_CACHE on a multi-user host — and keep our own dirs 0700.
+  defp current_uid do
+    {out, 0} = System.cmd("/usr/bin/id", ["-u"])
+    out |> String.trim() |> String.to_integer()
+  end
+
+  defp assert_owned!(dir) do
+    case File.stat(dir) do
+      {:ok, %File.Stat{uid: uid}} ->
+        unless uid == current_uid() do
+          Mix.raise("""
+          Refusing to trust #{dir}: it is owned by uid #{uid}, not you
+          (uid #{current_uid()}). A shared or attacker-controlled cache
+          could plant a malicious libmlx.a that is statically linked into
+          the NIF. Point EMILY_CACHE at a private, user-owned directory.
+          """)
+        end
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        Mix.raise("Cannot stat #{dir}: #{inspect(reason)}")
+    end
+  end
+
+  defp prepare_cache_dir! do
+    cache = cache_dir()
+    File.mkdir_p!(cache)
+    assert_owned!(cache)
+    File.chmod!(cache, 0o700)
+    cache
   end
 
   defp mlx_variant do
@@ -292,7 +331,9 @@ defmodule Emily.MixProject do
 
   defp build_mlx(args) do
     _ = arch_tag()
+    assert_owned!(cache_dir())
     dir = mlx_install_dir()
+    assert_owned!(dir)
 
     if "--force" in args do
       File.rm_rf!(dir)
@@ -328,7 +369,7 @@ defmodule Emily.MixProject do
     script = Path.expand("scripts/build-mlx.sh", File.cwd!())
     jit_flag = if mlx_variant() == "jit", do: "1", else: "0"
 
-    File.mkdir_p!(cache_dir())
+    prepare_cache_dir!()
 
     Mix.shell().info("Building MLX #{@mlx_version} (#{mlx_variant()}) from source")
 

@@ -1,5 +1,14 @@
 ### Security
 
+- The dev/CI source-build path now refuses to trust an MLX install
+  directory it doesn't own and keeps the build cache `0700`, so a shared
+  or attacker-controlled `EMILY_CACHE` can't plant a `libmlx.a` that is
+  then statically linked into the NIF. Fixed system tools (`getconf`,
+  `id`, `sw_vers`, plus `xcrun`/`sysctl`/`ps` in `build-mlx.sh`) resolve
+  from absolute/system paths rather than `$PATH`, and the MLX-build lock
+  records the holder's process start time so a recycled PID can't be
+  mistaken for the original holder. Build-time only; no runtime change.
+
 - Precompiled NIF downloads are now verified against checksums pinned
   inside the hex package (`native_checksums.txt`) rather than a `.sha256`
   sidecar fetched from the same GitHub release as the tarball. Because
