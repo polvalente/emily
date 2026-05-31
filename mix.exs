@@ -44,7 +44,14 @@ defmodule Emily.MixProject do
   end
 
   def cli do
-    [preferred_envs: [docs: :docs, "hex.publish": :docs, "emily.publish": :docs, precommit: :test]]
+    [
+      preferred_envs: [
+        docs: :docs,
+        "hex.publish": :docs,
+        "emily.publish": :docs,
+        precommit: :test
+      ]
+    ]
   end
 
   def application do
@@ -138,6 +145,7 @@ defmodule Emily.MixProject do
         "deps.unlock --unused",
         "format",
         "credo --strict",
+        &docs_check/1,
         "test"
       ],
       "compile.emily_mlx": &build_mlx/1,
@@ -159,6 +167,31 @@ defmodule Emily.MixProject do
     ]
   end
 
+  # Build the *published* doc surface (the `:docs` env that `mix hex.publish`
+  # uses) and fail on any ExDoc warning — autolinks to hidden/undefined
+  # symbols, broken refs, etc. Run as a subprocess because `mix precommit`
+  # itself runs in `:test`, where `test/support/` modules (and their
+  # `only: :test` deps like Axon) compile in and would warn for code that
+  # never ships. The NIF in `priv/` is shared across envs, so this reuses it
+  # — no native rebuild, just an Elixir recompile + doc generation. CI runs
+  # `mix precommit`, so this gates merges too.
+  defp docs_check(_args) do
+    {output, status} =
+      System.cmd("mix", ["docs", "--warnings-as-errors"],
+        env: [{"MIX_ENV", "docs"}],
+        stderr_to_stdout: true
+      )
+
+    IO.write(output)
+
+    if status != 0 do
+      Mix.raise(
+        "mix docs reported warnings (see above). Fix the reference, or if it " <>
+          "points at a hidden/undefined symbol, add it to :skip_code_autolink_to in docs/0."
+      )
+    end
+  end
+
   defp clean_mlx(_args) do
     case Path.wildcard(Path.join(cache_dir(), "mlx-*")) do
       [] ->
@@ -176,6 +209,23 @@ defmodule Emily.MixProject do
     [
       main: "readme",
       source_url_pattern: "#{@source_url}/blob/#{@version}/%{path}#L%{line}",
+      # Symbols ExDoc can't link, so it warns on every reference to them.
+      # Listed explicitly on purpose: the `mix precommit` docs gate fails
+      # with the exact unlinkable symbol when a new one appears, making each
+      # addition here a deliberate one-liner rather than silent auto-skipping.
+      # A module entry (`Emily.Native`) does NOT cover its members, so each
+      # referenced function is listed too.
+      skip_code_autolink_to: [
+        # `Emily.Native` and its NIF shims are `@moduledoc false`.
+        "Emily.Native",
+        "Emily.Native.from_binary/3",
+        "Emily.Native.conv_general/8",
+        "Emily.Native.worker_queue_depth/1",
+        # Hidden Nx callback + private/external Nx internals.
+        "Emily.Backend.block/4",
+        "Nx.Backend.block/4",
+        "Nx.Defn.Expr.optional/3"
+      ],
       extras: [
         "README.md",
         "ARCHITECTURE.md",
