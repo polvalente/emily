@@ -21,11 +21,15 @@ built from source (in this repo / CI) or consumed as a hex package:
 - **Hex consumer (no `c_src/` in the tarball).** `mix compile` runs
   `:emily_nif`. The `compile.emily_nif` alias downloads the matching
   `emily-nif-<v>-<variant>-<target>.tar.gz` from the emily GitHub
-  release for the tag, verifies its SHA256 against the `.sha256`
-  sidecar fetched alongside it (no checksums baked into mix.exs —
-  the sidecar is the source of truth for the published asset), and
-  extracts into `priv/`. No compilation; no MLX source tree on the
-  consumer side.
+  release for the tag, verifies its SHA256 against the checksum pinned
+  in `native_checksums.txt` (shipped *inside* the hex package, so it's
+  covered by Hex's package hash in the consumer's `mix.lock` — a trust
+  root independent of the mutable release), validates the archive
+  entries against an allowlist (`libemily.so`/`libemily.dylib` +
+  `mlx.metallib`; rejects symlinks, hardlinks, `..` traversal, absolute
+  paths, and any unexpected entry), and extracts those files into
+  `priv/` via `:erl_tar`. No compilation; no MLX source tree on the
+  consumer side. See `Emily.NifArtifact`.
 
 The switch is driven by a `File.dir?("c_src")` check in mix.exs's
 `compilers/0` — the hex `package[:files]` list ships only `lib/` and
@@ -39,9 +43,11 @@ default `aot`) through `config/config.exs` and stash the atom as
 
 ## Cutting a release
 
-Consumers verify each NIF tarball against a `.sha256` sidecar
-fetched from the same GitHub release, so there is nothing in
-`mix.exs` that has to be updated per release beyond `@version`.
+Consumers verify each NIF tarball against the checksum pinned in
+`native_checksums.txt`, which ships in the hex package. The
+`hex.publish` alias regenerates that file from the freshly-built
+release artifacts on every publish (step 4), so there is nothing to
+update or commit by hand — the file is git-ignored and can't go stale.
 
 ### 1. Land changes on `main`
 
@@ -70,7 +76,9 @@ Each cell clones `:mlx_src`, builds MLX + the NIF from source
 (`scripts/build-mlx.sh` + `elixir_make`), tars
 `priv/libemily.* + priv/mlx.metallib` as
 `emily-nif-<v>-<variant>-<target>.tar.gz`, writes a `.sha256`
-sidecar, and uploads both to a **draft** GitHub release at
+sidecar (informational — consumers verify against the pinned
+`native_checksums.txt`, not the sidecar), and uploads both to a
+**draft** GitHub release at
 `https://github.com/ausimian/emily/releases/tag/<v>` — the URL the
 consumer's `compile.emily_nif` step fetches from.
 
@@ -87,17 +95,32 @@ iex -S mix
 # Nx.tensor([1.0, 2.0]) |> Nx.add(3) |> Nx.to_flat_list()
 ```
 
-`mix compile` fetches the `.sha256` sidecar first, then the tarball,
-verifies, extracts. A variant-mismatched consumer (`config :emily,
-variant: :jit`) should download the JIT tarball instead — worth
-spot-checking both lanes on the first release of a bump.
+`mix compile` reads the pinned checksum from `native_checksums.txt`,
+downloads the tarball, verifies, validates entries, extracts. A
+variant-mismatched consumer (`config :emily, variant: :jit`) should
+download the JIT tarball instead — worth spot-checking both lanes on
+the first release of a bump. (The pin only ever exists in the
+*published* package — `native_checksums.txt` is git-ignored and
+generated during `mix hex.publish` — so run this end-to-end verify
+against the published package, i.e. after step 4.)
 
 ### 4. Promote the draft and publish
 
+Promote the release so its assets are public, then publish:
+
 ```sh
-gh release edit <v> --repo ausimian/emily --draft=false
-mix hex.publish
+gh release edit <v> --repo ausimian/emily --draft=false   # assets go public
+mix hex.publish                                            # alias pins checksums, then publishes
 ```
+
+The `hex.publish` alias runs `mix emily.checksums` first: it downloads
+each tarball from the (now-public) release, records its SHA256 into
+`native_checksums.txt`, and `mix hex.publish` then packages that file.
+So the consumer verifies downloads against a trust root that lives in
+the immutable Hex package, not the mutable GitHub release — with no file
+to maintain and nothing to commit. The file is git-ignored and
+regenerated on every publish, so it can't go stale. If the draft isn't
+public yet, `mix emily.checksums` 404s and aborts the publish.
 
 ### Rebuilding without retagging
 
