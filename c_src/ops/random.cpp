@@ -39,7 +39,7 @@ fine::Term random_split_nif(
     fine::ResourcePtr<Tensor> key,
     int64_t num) {
   return async_encoded(env, w, [key = std::move(key), num](mx::Stream &s) {
-    return wrap(mx::random::split(key->array, static_cast<int>(num), s));
+    return wrap(mx::random::split(key->array, emily::require_count(num, "num"), s));
   });
 }
 FINE_NIF(random_split_nif, 0);
@@ -141,8 +141,9 @@ fine::Term random_categorical_nif(
   return async_encoded(env, w,
       [logits = std::move(logits), axis, num_samples,
        key = std::move(key)](mx::Stream &s) {
-        return wrap(mx::random::categorical(logits->array, static_cast<int>(axis),
-                                            static_cast<int>(num_samples),
+        return wrap(mx::random::categorical(logits->array,
+                                            emily::checked_int(axis, "axis"),
+                                            emily::require_count(num_samples, "num_samples"),
                                             opt_key(key), s));
       });
 }

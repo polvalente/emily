@@ -77,7 +77,7 @@ fine::Term fast_rope_nif(
        offset = std::move(offset), freqs = std::move(freqs)](mx::Stream &s) {
         std::optional<float> base_f;
         if (base) base_f = static_cast<float>(*base);
-        return wrap(mx::fast::rope(x->array, static_cast<int>(dims), traditional,
+        return wrap(mx::fast::rope(x->array, emily::checked_int(dims, "dims"), traditional,
                                    base_f, static_cast<float>(scale),
                                    offset->array, opt_array(freqs), s));
       });

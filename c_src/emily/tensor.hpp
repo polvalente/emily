@@ -70,8 +70,38 @@ inline std::size_t checked_nelem(const mx::Shape &shape) {
   return nelem;
 }
 
+// Narrow an Elixir int64 to a C++ int, rejecting values outside the int
+// range instead of silently wrapping (a wrapped axis/index can dispatch
+// the wrong MLX op or reach an unexpected code path). `what` names the
+// argument for the error message.
+inline int checked_int(int64_t v, const char *what) {
+  if (v < std::numeric_limits<int>::min() ||
+      v > std::numeric_limits<int>::max()) {
+    throw std::invalid_argument(std::string(what) + " out of int range: " +
+                                std::to_string(v));
+  }
+  return static_cast<int>(v);
+}
+
+// Like checked_int but for counts/sizes that must also be non-negative
+// (they drive allocations or become shape dimensions). Rejects negative
+// and out-of-range values.
+inline int require_count(int64_t v, const char *what) {
+  if (v < 0 || v > std::numeric_limits<int>::max()) {
+    throw std::invalid_argument(std::string(what) +
+                                " must be in 0..INT_MAX, got " +
+                                std::to_string(v));
+  }
+  return static_cast<int>(v);
+}
+
 inline std::vector<int> to_int_vec(const std::vector<int64_t> &v) {
-  return std::vector<int>(v.begin(), v.end());
+  std::vector<int> out;
+  out.reserve(v.size());
+  for (auto x : v) {
+    out.push_back(checked_int(x, "vector element"));
+  }
+  return out;
 }
 
 inline std::vector<mx::array>

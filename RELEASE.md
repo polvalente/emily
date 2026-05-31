@@ -1,5 +1,15 @@
 ### Security
 
+- Integer arguments crossing the NIF boundary are now range-checked
+  before being narrowed from Elixir's `int64` to C++ `int`. Previously an
+  out-of-range axis, count, or shape entry wrapped silently (e.g. an axis
+  of `2^32 + 3` became `3`), dispatching the wrong MLX operation; and
+  unbounded sample counts in `random_split`/`random_categorical` could
+  drive huge allocations. Out-of-range values, and negative counts, now
+  raise `ArgumentError`. Centralized as `checked_int` / `require_count`
+  helpers applied across the reduce, shape, sort, random, index, linalg,
+  conv, and fast NIFs.
+
 - Native indexing and window NIFs now validate their vector arguments
   against the tensor rank before indexing, and reject non-positive
   strides, dilations, and window dimensions. Previously a direct

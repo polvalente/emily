@@ -40,8 +40,8 @@ fine::Term roll_nif(
     int64_t shift,
     int64_t axis) {
   return async_encoded(env, w, [a = std::move(a), shift, axis](mx::Stream &s) {
-    return wrap(mx::roll(a->array, static_cast<int>(shift),
-                         static_cast<int>(axis), s));
+    return wrap(mx::roll(a->array, emily::checked_int(shift, "shift"),
+                         emily::checked_int(axis, "axis"), s));
   });
 }
 FINE_NIF(roll_nif, 0);
@@ -68,7 +68,7 @@ fine::Term logcumsumexp_nif(
     bool inclusive) {
   return async_encoded(env, w,
       [a = std::move(a), axis, reverse, inclusive](mx::Stream &s) {
-        return wrap(mx::logcumsumexp(a->array, static_cast<int>(axis), reverse,
+        return wrap(mx::logcumsumexp(a->array, emily::checked_int(axis, "axis"), reverse,
                                      inclusive, s));
       });
 }
