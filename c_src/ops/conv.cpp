@@ -8,6 +8,9 @@
 #include <mlx/mlx.h>
 
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace mx = mlx::core;
@@ -33,6 +36,17 @@ fine::Term conv_general_nif(
       [input = std::move(input), weight = std::move(weight),
        stride = std::move(stride), padding = std::move(padding),
        dilation = std::move(dilation), groups, flip](mx::Stream &s) {
+        // MLX's run_conv_checks computes `in_channels % groups`, so a
+        // non-positive `groups` is an integer modulo-by-zero — a SIGFPE,
+        // not a C++ exception, which would bypass the async catch ladder
+        // and crash the whole BEAM VM. Validate the un-narrowed int64 here
+        // (before `static_cast<int>`) so a large value can't wrap to a
+        // valid-looking small/zero divisor either.
+        if (groups < 1 || groups > std::numeric_limits<int>::max()) {
+          throw std::invalid_argument(
+              "[conv] groups must be in 1..INT_MAX, got " +
+              std::to_string(groups));
+        }
         return wrap(mx::conv_general(
             input->array, weight->array, to_int_vec(stride),
             to_int_vec(std::get<0>(padding)), to_int_vec(std::get<1>(padding)),

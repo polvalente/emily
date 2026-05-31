@@ -954,6 +954,22 @@ defmodule Emily.NativeTest do
       assert Native.shape(r) == [1, 3, 1]
       assert to_f32_list(r) == [3.0, 5.0, 7.0]
     end
+
+    test "conv_general rejects groups <= 0 with ArgumentError instead of crashing" do
+      # MLX divides input channels by `groups`; groups == 0 is an integer
+      # modulo-by-zero (SIGFPE) deep in MLX that would take down the BEAM.
+      # The NIF must reject it at the boundary.
+      input = f32([1.0, 2.0, 3.0, 4.0], [1, 4, 1])
+      weight = f32([1.0, 1.0], [1, 2, 1])
+
+      err =
+        assert_raise ArgumentError, fn ->
+          Native.conv_general(worker(), input, weight, [1], {[0], [0]}, {[1], [1]}, 0, false)
+        end
+
+      assert err.message =~ "groups"
+      assert err.message =~ "conv_general"
+    end
   end
 
   # ---------- Random ----------
