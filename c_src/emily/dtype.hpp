@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "atoms.hpp"
+
 #include <fine.hpp>
 #include <mlx/mlx.h>
 
@@ -42,19 +44,19 @@ inline mx::Dtype to_mlx_dtype(const std::tuple<fine::Atom, int64_t> &t) {
 }
 
 inline std::tuple<fine::Atom, int64_t> from_mlx_dtype(mx::Dtype dtype) {
-  if (dtype == mx::float32)   return {fine::Atom("f"),    32};
-  if (dtype == mx::float16)   return {fine::Atom("f"),    16};
-  if (dtype == mx::bfloat16)  return {fine::Atom("bf"),   16};
-  if (dtype == mx::int8)      return {fine::Atom("s"),     8};
-  if (dtype == mx::int16)     return {fine::Atom("s"),    16};
-  if (dtype == mx::int32)     return {fine::Atom("s"),    32};
-  if (dtype == mx::int64)     return {fine::Atom("s"),    64};
-  if (dtype == mx::uint8)     return {fine::Atom("u"),     8};
-  if (dtype == mx::uint16)    return {fine::Atom("u"),    16};
-  if (dtype == mx::uint32)    return {fine::Atom("u"),    32};
-  if (dtype == mx::uint64)    return {fine::Atom("u"),    64};
-  if (dtype == mx::complex64) return {fine::Atom("c"),    64};
-  if (dtype == mx::bool_)     return {fine::Atom("pred"),  1};
+  if (dtype == mx::float32)   return {atoms::f,    32};
+  if (dtype == mx::float16)   return {atoms::f,    16};
+  if (dtype == mx::bfloat16)  return {atoms::bf,   16};
+  if (dtype == mx::int8)      return {atoms::s,     8};
+  if (dtype == mx::int16)     return {atoms::s,    16};
+  if (dtype == mx::int32)     return {atoms::s,    32};
+  if (dtype == mx::int64)     return {atoms::s,    64};
+  if (dtype == mx::uint8)     return {atoms::u,     8};
+  if (dtype == mx::uint16)    return {atoms::u,    16};
+  if (dtype == mx::uint32)    return {atoms::u,    32};
+  if (dtype == mx::uint64)    return {atoms::u,    64};
+  if (dtype == mx::complex64) return {atoms::c,    64};
+  if (dtype == mx::bool_)     return {atoms::pred,  1};
   throw std::runtime_error("unmapped mlx dtype");
 }
 
