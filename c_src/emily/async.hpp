@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include "atoms.hpp"
 #include "worker.hpp"
 
 #include <fine.hpp>
@@ -66,16 +67,16 @@ error_reason_from_current_exception(ErlNifEnv *msg_env) {
   try {
     throw;  // re-raise the current exception to classify it
   } catch (const std::invalid_argument &e) {
-    return enif_make_tuple2(msg_env, enif_make_atom(msg_env, "argument"),
+    return enif_make_tuple2(msg_env, fine::encode(msg_env, emily::atoms::argument),
                             make_binary_from_cstr(msg_env, e.what()));
   } catch (const std::runtime_error &e) {
-    return enif_make_tuple2(msg_env, enif_make_atom(msg_env, "runtime"),
+    return enif_make_tuple2(msg_env, fine::encode(msg_env, emily::atoms::runtime),
                             make_binary_from_cstr(msg_env, e.what()));
   } catch (const std::exception &e) {
-    return enif_make_tuple2(msg_env, enif_make_atom(msg_env, "runtime"),
+    return enif_make_tuple2(msg_env, fine::encode(msg_env, emily::atoms::runtime),
                             make_binary_from_cstr(msg_env, e.what()));
   } catch (...) {
-    return enif_make_atom(msg_env, "unknown");
+    return fine::encode(msg_env, emily::atoms::unknown);
   }
 }
 
@@ -118,19 +119,19 @@ fine::Term async_reply(ErlNifEnv *env,
         // of hanging on a reply that will never come.
         reply = enif_make_tuple2(
             msg_env, ref_in_msg,
-            enif_make_tuple2(msg_env, enif_make_atom(msg_env, "error"),
-                             enif_make_atom(msg_env, "stopped")));
+            enif_make_tuple2(msg_env, fine::encode(msg_env, emily::atoms::error),
+                             fine::encode(msg_env, emily::atoms::stopped)));
       } else {
         try {
           ERL_NIF_TERM payload = build_payload(s, msg_env);
           ERL_NIF_TERM ok_tuple = enif_make_tuple2(
-              msg_env, enif_make_atom(msg_env, "ok"), payload);
+              msg_env, fine::encode(msg_env, emily::atoms::ok), payload);
           reply = enif_make_tuple2(msg_env, ref_in_msg, ok_tuple);
         } catch (...) {
           reply = enif_make_tuple2(
               msg_env, ref_in_msg,
               enif_make_tuple2(
-                  msg_env, enif_make_atom(msg_env, "error"),
+                  msg_env, fine::encode(msg_env, emily::atoms::error),
                   __async::error_reason_from_current_exception(msg_env)));
         }
       }

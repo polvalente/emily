@@ -4,6 +4,7 @@
 // defined here via emily/tensor.hpp.
 
 #include "emily/async.hpp"
+#include "emily/atoms.hpp"
 #include "emily/tensor.hpp"
 #include "emily/worker.hpp"
 
@@ -138,7 +139,7 @@ fine::Term eval_nif(ErlNifEnv *env,
       env, w,
       [tensor](mx::Stream &, ErlNifEnv *msg_env) {
         mx::eval(tensor->array);
-        return enif_make_atom(msg_env, "ok");
+        return fine::encode(msg_env, emily::atoms::ok);
       });
 }
 FINE_NIF(eval_nif, 0);
