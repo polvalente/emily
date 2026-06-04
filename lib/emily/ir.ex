@@ -141,4 +141,210 @@ defmodule Emily.IR do
     kind = Map.fetch!(@ref_kinds_inverse, bsr(packed, @ref_tag_shift) |> band(0x3))
     {kind, band(packed, @index_mask)}
   end
+
+  # =================================================================
+  # Lowering: Nx.Defn.Expr -> %Emily.IR{}
+  # =================================================================
+  #
+  # Each Expr node's `op` is the `Nx.Backend` callback name and its
+  # `args` mirror that callback's args (minus the output template), so
+  # the per-op handling below ports `Emily.Backend`'s logic — including
+  # the dtype-coercion casts it makes explicit — emitting IR
+  # instructions instead of eager Native calls. Unsupported ops raise
+  # (no silent fallback) per the compiler's no-fallback design.
+
+  alias Nx.Tensor, as: T
+
+  # Nx Expr op -> IR opcode. Arithmetic/bitwise cast both operands to the
+  # node's out.type before the op (see backend.ex @renamed_arith_binary).
+  @arith_binary %{
+    add: :add,
+    subtract: :subtract,
+    multiply: :multiply,
+    divide: :divide,
+    pow: :power,
+    remainder: :remainder,
+    min: :minimum,
+    max: :maximum,
+    bitwise_and: :bitwise_and,
+    bitwise_or: :bitwise_or,
+    bitwise_xor: :bitwise_xor,
+    left_shift: :left_shift,
+    right_shift: :right_shift
+  }
+
+  # Compare/logical cast both operands to Nx.Type.merge(a, b); the op
+  # yields MLX bool, coerced to the node's out.type ({:u, 8}).
+  @compare_binary %{
+    equal: :equal,
+    not_equal: :not_equal,
+    less: :less,
+    less_equal: :less_equal,
+    greater: :greater,
+    greater_equal: :greater_equal,
+    logical_and: :logical_and,
+    logical_or: :logical_or
+  }
+
+  # Unary elementwise: no coercion (MLX preserves the dtype Nx expects).
+  @unary_ops %{
+    negate: :negative,
+    abs: :abs,
+    sign: :sign,
+    sqrt: :sqrt,
+    rsqrt: :rsqrt,
+    exp: :exp,
+    log: :log,
+    log1p: :log1p,
+    sin: :sin,
+    cos: :cos,
+    tanh: :tanh,
+    sigmoid: :sigmoid,
+    floor: :floor,
+    ceil: :ceil,
+    erf: :erf
+  }
+
+  @doc """
+  Lower a list of output-leaf `Nx.Defn.Expr` tensors into an `%Emily.IR{}`.
+
+  The returned IR's `outputs` are in the same order as `output_leaves`,
+  so the caller can reassemble its output container by zipping the
+  program's results back in order. Captured weights / materialized
+  constants are held as native tensor refs in `captures` / `consts`.
+  """
+  @spec lower([T.t()]) :: t()
+  def lower(output_leaves) when is_list(output_leaves) do
+    state = %{
+      cache: %{},
+      instrs: [],
+      n_instrs: 0,
+      captures: [],
+      n_captures: 0,
+      consts: [],
+      n_consts: 0,
+      n_inputs: 0
+    }
+
+    {output_refs, state} = Enum.map_reduce(output_leaves, state, &lower_node/2)
+
+    %__MODULE__{
+      n_inputs: state.n_inputs,
+      captures: Enum.reverse(state.captures),
+      consts: Enum.reverse(state.consts),
+      instrs: Enum.reverse(state.instrs),
+      outputs: output_refs
+    }
+  end
+
+  defp lower_node(%T{data: %Nx.Defn.Expr{id: id}} = t, state) do
+    case state.cache do
+      %{^id => ref} ->
+        {ref, state}
+
+      _ ->
+        {ref, state} = lower_op(t, state)
+        {ref, %{state | cache: Map.put(state.cache, id, ref)}}
+    end
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :parameter, args: [pos]}}, state) do
+    {{:input, pos}, %{state | n_inputs: max(state.n_inputs, pos + 1)}}
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :constant, args: [number]}} = t, state) do
+    bin =
+      number
+      |> Nx.tensor(type: t.type, backend: Nx.BinaryBackend)
+      |> Nx.broadcast(t.shape)
+      |> Nx.to_binary()
+
+    ref = Emily.Native.from_binary(bin, Tuple.to_list(t.shape), t.type)
+    idx = state.n_consts
+    {{:const, idx}, %{state | consts: [ref | state.consts], n_consts: idx + 1}}
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :tensor, args: [concrete]}}, state) do
+    bin = Nx.to_binary(concrete)
+    ref = Emily.Native.from_binary(bin, Tuple.to_list(concrete.shape), concrete.type)
+    idx = state.n_captures
+    {{:capture, idx}, %{state | captures: [ref | state.captures], n_captures: idx + 1}}
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :metadata, args: [expr, _meta]}}, state) do
+    lower_node(expr, state)
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: op, args: [a, b]}} = t, state)
+       when is_map_key(@arith_binary, op) do
+    {ra, state} = lower_node(a, state)
+    {rb, state} = lower_node(b, state)
+    code = dtype_code(t.type)
+    {ca, state} = emit(state, :astype, [ra], [[code]])
+    {cb, state} = emit(state, :astype, [rb], [[code]])
+    emit(state, Map.fetch!(@arith_binary, op), [ca, cb])
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: op, args: [a, b]}} = t, state)
+       when is_map_key(@compare_binary, op) do
+    {ra, state} = lower_node(a, state)
+    {rb, state} = lower_node(b, state)
+    merged = dtype_code(Nx.Type.merge(a.type, b.type))
+    {ca, state} = emit(state, :astype, [ra], [[merged]])
+    {cb, state} = emit(state, :astype, [rb], [[merged]])
+    {r, state} = emit(state, Map.fetch!(@compare_binary, op), [ca, cb])
+    emit(state, :astype, [r], [[dtype_code(t.type)]])
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: op, args: [a]}}, state)
+       when is_map_key(@unary_ops, op) do
+    {ra, state} = lower_node(a, state)
+    emit(state, Map.fetch!(@unary_ops, op), [ra])
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :as_type, args: [a]}} = t, state) do
+    {ra, state} = lower_node(a, state)
+    emit(state, :astype, [ra], [[dtype_code(t.type)]])
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :reshape, args: [a]}} = t, state) do
+    {ra, state} = lower_node(a, state)
+    emit(state, :reshape, [ra], [Tuple.to_list(t.shape)])
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :squeeze, args: [a, axes]}}, state) do
+    {ra, state} = lower_node(a, state)
+    emit(state, :squeeze, [ra], [axes])
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :transpose, args: [a, axes]}}, state) do
+    {ra, state} = lower_node(a, state)
+    emit(state, :transpose, [ra], [axes])
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :broadcast, args: [a, _shape, axes]}} = t, state) do
+    {ra, state} = lower_node(a, state)
+    in_dims = Tuple.to_list(a.shape)
+    out_dims = Tuple.to_list(t.shape)
+    placed = Enum.zip(axes, in_dims) |> Map.new()
+
+    intermediate =
+      out_dims |> Enum.with_index() |> Enum.map(fn {_, i} -> Map.get(placed, i, 1) end)
+
+    {rr, state} = emit(state, :reshape, [ra], [intermediate])
+    emit(state, :broadcast_to, [rr], [out_dims])
+  end
+
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) do
+    raise ArgumentError,
+          "Emily Expr compiler does not yet lower op #{inspect(op)} " <>
+            "(no fallback). It will be added in a later milestone."
+  end
+
+  # Append an instruction, returning its {:instr, i} ref.
+  defp emit(state, opcode, operands, iattrs \\ []) do
+    ref = {:instr, state.n_instrs}
+    instr = %{opcode: opcode, operands: operands, iattrs: iattrs}
+    {ref, %{state | instrs: [instr | state.instrs], n_instrs: state.n_instrs + 1}}
+  end
 end
