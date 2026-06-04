@@ -94,7 +94,10 @@ defmodule Emily.IR do
     max: 48,
     min: 49,
     all: 50,
-    any: 51
+    any: 51,
+    # indexing / selection
+    where: 52,
+    slice: 53
   }
 
   @ref_kinds %{input: 0, capture: 1, const: 2, instr: 3}
@@ -413,6 +416,50 @@ defmodule Emily.IR do
     {r, state} = emit(state, :matmul, [ra, rb])
     {r, state} = emit(state, :reshape, [r], [Tuple.to_list(t.shape)])
     coerce(r, t.type, state)
+  end
+
+  # select(pred, on_true, on_false): cast pred to {:pred, 1}, then where.
+  # Mirrors Emily.Backend.select/4.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :select, args: [pred, on_true, on_false]}} = t, state) do
+    {rp, state} = lower_node(pred, state)
+    {rt, state} = lower_node(on_true, state)
+    {rf, state} = lower_node(on_false, state)
+    {rp, state} = emit(state, :astype, [rp], [[dtype_code({:pred, 1})]])
+    {r, state} = emit(state, :where, [rp, rt, rf])
+    coerce(r, t.type, state)
+  end
+
+  # slice(t, starts, lengths, strides): static integer starts only. Nx
+  # passes scalar-tensor starts for dynamic slicing; those depend on
+  # runtime values and are deferred (the decode offset becomes a runtime
+  # input in CM3). Stops = starts + lengths (see Emily.Backend.slice/5).
+  defp lower_op(
+         %T{data: %Nx.Defn.Expr{op: :slice, args: [a, starts, lengths, strides]}} = t,
+         state
+       ) do
+    unless Enum.all?(starts, &is_integer/1) do
+      raise ArgumentError,
+            "Emily Expr compiler: dynamic (tensor) slice start indices are not yet " <>
+              "supported (they require a runtime input). Got: #{inspect(starts)}"
+    end
+
+    {ra, state} = lower_node(a, state)
+    stops = Enum.zip_with(starts, lengths, fn st, l -> st + l end)
+    {r, state} = emit(state, :slice, [ra], [starts, stops, strides])
+    coerce(r, t.type, state)
+  end
+
+  # iota: a pure creation op (shape/axis/type all static), so materialize
+  # it as a captured constant instead of adding a runtime opcode.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :iota, args: [axis]}} = t, state) do
+    bin =
+      t.shape
+      |> Nx.iota(axis: axis, type: t.type, backend: Nx.BinaryBackend)
+      |> Nx.to_binary()
+
+    ref = Emily.Native.from_binary(bin, Tuple.to_list(t.shape), t.type)
+    idx = state.n_consts
+    {{:const, idx}, %{state | consts: [ref | state.consts], n_consts: idx + 1}}
   end
 
   defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) do

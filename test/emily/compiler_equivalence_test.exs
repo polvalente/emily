@@ -192,6 +192,35 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "select / slice / iota" do
+    test "select / where matches" do
+      a = et([1.0, 2.0, 3.0, 4.0])
+      b = et([10.0, 20.0, 30.0, 40.0])
+      assert_equiv(fn x, y -> Nx.select(Nx.greater(x, 2.0), x, y) end, [a, b])
+    end
+
+    test "relu via select matches" do
+      x = et([-1.0, 0.5, -2.0, 3.0])
+      assert_equiv(fn t -> Nx.max(t, 0.0) end, [x])
+
+      assert_equiv(fn t -> Nx.select(Nx.greater(t, 0.0), t, Nx.broadcast(0.0, Nx.shape(t))) end, [
+        x
+      ])
+    end
+
+    test "static slice matches" do
+      x = et([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0]])
+      assert_equiv(fn t -> Nx.slice(t, [0, 1], [2, 2]) end, [x])
+      assert_equiv(fn t -> t[[0..1, 1..2]] end, [x])
+    end
+
+    test "iota lowers to a constant and matches" do
+      x = et([0.0, 0.0, 0.0, 0.0])
+      assert_equiv(fn t -> Nx.add(t, Nx.iota({4})) end, [x])
+      assert_equiv(fn t -> Nx.add(t, Nx.iota({4}, type: :f32)) end, [x])
+    end
+  end
+
   describe "two-layer MLP forward (matmul-dominated)" do
     test "matches the evaluator end-to-end" do
       x = et([[0.1, 0.2, 0.3, 0.4]])

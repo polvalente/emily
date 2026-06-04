@@ -86,9 +86,12 @@ enum class Opcode : int64_t {
   ReduceMin = 49,
   All = 50,
   Any = 51,
+  // Indexing / selection
+  Where = 52, // operands: [cond, x, y]
+  Slice = 53, // operands: [a]; iattrs: [[start...], [stop...], [strides...]]
 };
 
-inline constexpr int64_t kOpcodeCount = 52;
+inline constexpr int64_t kOpcodeCount = 54;
 
 inline bool valid_opcode(int64_t v) { return v >= 0 && v < kOpcodeCount; }
 
@@ -301,6 +304,18 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
   case Opcode::Any:
     return mx::any(arg1(in, "any"), emily::to_int_vec(attr0(iattrs, "any")),
                    keepdims_attr(iattrs, "any"), s);
+  // --- Indexing / selection ---
+  case Opcode::Where:
+    if (in.size() != 3) {
+      throw std::invalid_argument("where expects 3 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    return mx::where(in[0], in[1], in[2], s);
+  case Opcode::Slice:
+    return mx::slice(arg1(in, "slice"),
+                     emily::to_mlx_shape(attr_at(iattrs, 0, "slice")),
+                     emily::to_mlx_shape(attr_at(iattrs, 1, "slice")),
+                     emily::to_mlx_shape(attr_at(iattrs, 2, "slice")), s);
   }
   throw std::invalid_argument("unknown opcode " +
                               std::to_string(static_cast<int64_t>(op)));
