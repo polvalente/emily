@@ -106,9 +106,16 @@ enum class Opcode : int64_t {
   // operands [x, w_q, scales, biases];
   // iattrs [[transpose],[group_size],[bits],[mode_code]]
   QuantizedMatmul = 60,
+  // operands [input, indices(s32)]; iattrs [[axis]]
+  Take = 61,
+  // operands [t0, t1, ...]; iattrs [[axis]]
+  Concatenate = 62,
+  // operands [src, update, start(s32 [naxes])]; iattrs [[axes...]] —
+  // dynamic put_slice (runtime start indices) via mx::slice_update.
+  DynSliceUpdate = 63,
 };
 
-inline constexpr int64_t kOpcodeCount = 61;
+inline constexpr int64_t kOpcodeCount = 64;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -447,6 +454,30 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     }
     return mx::quantized_matmul(in[0], in[1], in[2], biases, transpose, gs, bits,
                                 mode, s);
+  }
+  case Opcode::Take: {
+    if (in.size() != 2) {
+      throw std::invalid_argument("take expects 2 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    int axis = emily::checked_int(scalar_at(iattrs, 0, "take"), "axis");
+    return mx::take(in[0], in[1], axis, s);
+  }
+  case Opcode::Concatenate: {
+    if (in.empty()) {
+      throw std::invalid_argument("concatenate expects >= 1 operand");
+    }
+    int axis = emily::checked_int(scalar_at(iattrs, 0, "concatenate"), "axis");
+    return mx::concatenate(in, axis, s);
+  }
+  case Opcode::DynSliceUpdate: {
+    if (in.size() != 3) {
+      throw std::invalid_argument("dyn_slice_update expects 3 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    return mx::slice_update(in[0], in[1], in[2],
+                            emily::to_int_vec(attr0(iattrs, "dyn_slice_update")),
+                            s);
   }
   }
   throw std::invalid_argument("unknown opcode " +
