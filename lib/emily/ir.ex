@@ -106,7 +106,8 @@ defmodule Emily.IR do
     fast_rope_freqs: 57,
     fast_sdpa: 58,
     fast_sdpa_mask: 59,
-    quantized_matmul: 60
+    quantized_matmul: 60,
+    take: 61
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -564,6 +565,15 @@ defmodule Emily.IR do
     ]
 
     emit_coerced(state, :quantized_matmul, [rx, rq, rs, rb], attrs, t.type)
+  end
+
+  # Nx.take / embedding lookup (Nx.Block.Take). Mirrors
+  # Emily.Backend.native_take/4: cast indices to s32, then mx::take.
+  defp lower_block(%Nx.Block.Take{axis: axis}, [input, indices], _expr, t, state) do
+    {ri, state} = lower_node(input, state)
+    {rx, state} = lower_node(indices, state)
+    {rx, state} = emit(state, :astype, [rx], [[dtype_code({:s, 32})]])
+    emit_coerced(state, :take, [ri, rx], [[axis]], t.type)
   end
 
   # Any other block struct raises. Lowering the block's composed

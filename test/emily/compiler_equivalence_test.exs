@@ -325,6 +325,20 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "take (embedding lookup)" do
+    test "take matches the Evaluator" do
+      embed = et([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])
+      ids = Nx.tensor([0, 3, 1, 0, 2], type: :s32, backend: Emily.Backend)
+      assert_equiv(fn e, i -> Nx.take(e, i) end, [embed, ids])
+    end
+
+    test "embedding lookup + scale (Gemma-style) matches" do
+      embed = et([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]])
+      ids = Nx.tensor([2, 0, 1], type: :s32, backend: Emily.Backend)
+      assert_equiv(fn e, i -> Nx.take(e, i) |> Nx.multiply(2.5) end, [embed, ids])
+    end
+  end
+
   describe "two-layer MLP forward (matmul-dominated)" do
     test "matches the evaluator end-to-end" do
       x = et([[0.1, 0.2, 0.3, 0.4]])

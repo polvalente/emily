@@ -106,9 +106,11 @@ enum class Opcode : int64_t {
   // operands [x, w_q, scales, biases];
   // iattrs [[transpose],[group_size],[bits],[mode_code]]
   QuantizedMatmul = 60,
+  // operands [input, indices(s32)]; iattrs [[axis]]
+  Take = 61,
 };
 
-inline constexpr int64_t kOpcodeCount = 61;
+inline constexpr int64_t kOpcodeCount = 62;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -447,6 +449,14 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     }
     return mx::quantized_matmul(in[0], in[1], in[2], biases, transpose, gs, bits,
                                 mode, s);
+  }
+  case Opcode::Take: {
+    if (in.size() != 2) {
+      throw std::invalid_argument("take expects 2 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    int axis = emily::checked_int(scalar_at(iattrs, 0, "take"), "axis");
+    return mx::take(in[0], in[1], axis, s);
   }
   }
   throw std::invalid_argument("unknown opcode " +
