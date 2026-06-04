@@ -117,4 +117,15 @@ defmodule Emily.Conformance.CompilerNativeTest do
 
     assert_native_matches(model, params, inputs)
   end
+
+  test "tiny ViT base forward (conv patch embed): native == evaluator, no fallback" do
+    {:ok, %{model: model, params: params}} =
+      Bumblebee.load_model({:hf, "hf-internal-testing/tiny-random-ViTModel"}, architecture: :base)
+
+    inputs = %{
+      "pixel_values" => Nx.broadcast(Nx.tensor(0.1, backend: Emily.Backend), {1, 30, 30, 3})
+    }
+
+    assert_native_matches(model, params, inputs)
+  end
 end
