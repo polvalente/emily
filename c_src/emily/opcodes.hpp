@@ -95,9 +95,17 @@ enum class Opcode : int64_t {
   // patterns (see Emily.IR.float_bits/1 + f64_from_bits below).
   FastRMSNorm = 54,   // operands: [x, weight];        iattrs: [[eps_bits]]
   FastLayerNorm = 55, // operands: [x, weight, bias];  iattrs: [[eps_bits]]
+  // operands [x, offset]; iattrs [[dims],[traditional],[base_bits],[scale_bits]]
+  FastRoPE = 56,
+  // operands [x, offset, freqs]; iattrs [[dims],[traditional],[scale_bits]]
+  FastRoPEFreqs = 57,
+  // operands [q, k, v]; iattrs [[scale_bits],[causal]]
+  FastSDPA = 58,
+  // operands [q, k, v, mask]; iattrs [[scale_bits]]
+  FastSDPAMask = 59,
 };
 
-inline constexpr int64_t kOpcodeCount = 56;
+inline constexpr int64_t kOpcodeCount = 60;
 
 inline bool valid_opcode(int64_t v) { return v >= 0 && v < kOpcodeCount; }
 
@@ -153,6 +161,18 @@ attr_at(const std::vector<std::vector<int64_t>> &a, std::size_t i,
                                 std::to_string(i));
   }
   return a[i];
+}
+
+// The single value of the i-th attribute list (for scalar attrs like
+// dims / flags / float bit patterns packed one-per-list).
+inline int64_t scalar_at(const std::vector<std::vector<int64_t>> &a,
+                         std::size_t i, const char *name) {
+  const auto &v = attr_at(a, i, name);
+  if (v.size() != 1) {
+    throw std::invalid_argument(std::string(name) + " attribute " +
+                                std::to_string(i) + " must be one value");
+  }
+  return v[0];
 }
 
 // Reduction keepdims flag lives in iattrs[1] as a single 0/1.
@@ -350,6 +370,55 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
         emily::f64_from_bits(scalar_attr(iattrs, "fast_layer_norm")));
     return mx::fast::layer_norm(in[0], std::optional<mx::array>(in[1]),
                                 std::optional<mx::array>(in[2]), eps, s);
+  }
+  case Opcode::FastRoPE: {
+    if (in.size() != 2) {
+      throw std::invalid_argument("fast_rope expects 2 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    int dims = emily::checked_int(scalar_at(iattrs, 0, "fast_rope"), "dims");
+    bool traditional = scalar_at(iattrs, 1, "fast_rope") != 0;
+    std::optional<float> base =
+        static_cast<float>(emily::f64_from_bits(scalar_at(iattrs, 2, "fast_rope")));
+    auto scale =
+        static_cast<float>(emily::f64_from_bits(scalar_at(iattrs, 3, "fast_rope")));
+    return mx::fast::rope(in[0], dims, traditional, base, scale, in[1],
+                          std::nullopt, s);
+  }
+  case Opcode::FastRoPEFreqs: {
+    if (in.size() != 3) {
+      throw std::invalid_argument("fast_rope_freqs expects 3 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    int dims =
+        emily::checked_int(scalar_at(iattrs, 0, "fast_rope_freqs"), "dims");
+    bool traditional = scalar_at(iattrs, 1, "fast_rope_freqs") != 0;
+    auto scale = static_cast<float>(
+        emily::f64_from_bits(scalar_at(iattrs, 2, "fast_rope_freqs")));
+    return mx::fast::rope(in[0], dims, traditional, std::nullopt, scale, in[1],
+                          std::optional<mx::array>(in[2]), s);
+  }
+  case Opcode::FastSDPA: {
+    if (in.size() != 3) {
+      throw std::invalid_argument("fast_sdpa expects 3 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    auto scale =
+        static_cast<float>(emily::f64_from_bits(scalar_at(iattrs, 0, "fast_sdpa")));
+    std::string mask_mode = scalar_at(iattrs, 1, "fast_sdpa") != 0 ? "causal" : "";
+    return mx::fast::scaled_dot_product_attention(
+        in[0], in[1], in[2], scale, mask_mode, std::nullopt, std::nullopt, s);
+  }
+  case Opcode::FastSDPAMask: {
+    if (in.size() != 4) {
+      throw std::invalid_argument("fast_sdpa_mask expects 4 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    auto scale = static_cast<float>(
+        emily::f64_from_bits(scalar_at(iattrs, 0, "fast_sdpa_mask")));
+    return mx::fast::scaled_dot_product_attention(
+        in[0], in[1], in[2], scale, "array", std::optional<mx::array>(in[3]),
+        std::nullopt, s);
   }
   }
   throw std::invalid_argument("unknown opcode " +

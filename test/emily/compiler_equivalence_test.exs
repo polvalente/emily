@@ -250,6 +250,42 @@ defmodule Emily.CompilerEquivalenceTest do
         [x, w]
       )
     end
+
+    test "rope matches the fused kernel" do
+      # {batch, heads, seq, head_dim}
+      x = Nx.iota({1, 2, 4, 8}, type: :f32, backend: Emily.Backend) |> Nx.divide(10.0)
+      offset = Nx.tensor(0, type: :s32, backend: Emily.Backend)
+
+      assert_equiv(fn x, off -> Emily.Fast.rope(x, off, dims: 8) end, [x, offset])
+      assert_equiv(fn x, off -> Emily.Fast.rope(x, off, dims: 8, base: 5000.0) end, [x, offset])
+    end
+
+    test "sdpa matches the fused kernel (causal and non-causal)" do
+      shape = {1, 2, 4, 8}
+      q = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+      k = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(48.0)
+      v = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(32.0)
+
+      assert_equiv(fn q, k, v -> Emily.Fast.scaled_dot_product_attention(q, k, v) end, [q, k, v])
+
+      assert_equiv(
+        fn q, k, v -> Emily.Fast.scaled_dot_product_attention(q, k, v, causal: true) end,
+        [q, k, v]
+      )
+    end
+
+    test "sdpa with an additive mask matches the fused kernel" do
+      shape = {1, 2, 4, 8}
+      q = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+      k = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(48.0)
+      v = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(32.0)
+      mask = Nx.broadcast(Nx.tensor(0.0, backend: Emily.Backend), {1, 1, 4, 4})
+
+      assert_equiv(
+        fn q, k, v, m -> Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m) end,
+        [q, k, v, mask]
+      )
+    end
   end
 
   describe "two-layer MLP forward (matmul-dominated)" do

@@ -101,7 +101,11 @@ defmodule Emily.IR do
     # fused transformer kernels (mx::fast::*); float attrs are int64 bit
     # patterns (float_bits/1).
     fast_rms_norm: 54,
-    fast_layer_norm: 55
+    fast_layer_norm: 55,
+    fast_rope: 56,
+    fast_rope_freqs: 57,
+    fast_sdpa: 58,
+    fast_sdpa_mask: 59
   }
 
   @ref_kinds %{input: 0, capture: 1, const: 2, instr: 3}
@@ -503,11 +507,50 @@ defmodule Emily.IR do
     coerce(r, t.type, state)
   end
 
+  defp lower_block(%FB.RoPE{} = b, [x, offset], _expr, t, state) do
+    {rx, state} = lower_node(x, state)
+    {ro, state} = lower_node(offset, state)
+
+    attrs = [[b.dims], [bool_int(b.traditional)], [float_bits(b.base)], [float_bits(b.scale)]]
+    {r, state} = emit(state, :fast_rope, [rx, ro], attrs)
+    coerce(r, t.type, state)
+  end
+
+  defp lower_block(%FB.RoPEWithFreqs{} = b, [x, offset, freqs], _expr, t, state) do
+    {rx, state} = lower_node(x, state)
+    {ro, state} = lower_node(offset, state)
+    {rf, state} = lower_node(freqs, state)
+
+    attrs = [[b.dims], [bool_int(b.traditional)], [float_bits(b.scale)]]
+    {r, state} = emit(state, :fast_rope_freqs, [rx, ro, rf], attrs)
+    coerce(r, t.type, state)
+  end
+
+  defp lower_block(%FB.SDPA{scale: scale, causal: causal}, [q, k, v], _expr, t, state) do
+    {rq, state} = lower_node(q, state)
+    {rk, state} = lower_node(k, state)
+    {rv, state} = lower_node(v, state)
+    {r, state} = emit(state, :fast_sdpa, [rq, rk, rv], [[float_bits(scale)], [bool_int(causal)]])
+    coerce(r, t.type, state)
+  end
+
+  defp lower_block(%FB.SDPAWithMask{scale: scale}, [q, k, v, mask], _expr, t, state) do
+    {rq, state} = lower_node(q, state)
+    {rk, state} = lower_node(k, state)
+    {rv, state} = lower_node(v, state)
+    {rm, state} = lower_node(mask, state)
+    {r, state} = emit(state, :fast_sdpa_mask, [rq, rk, rv, rm], [[float_bits(scale)]])
+    coerce(r, t.type, state)
+  end
+
   # Unknown block struct: lower its pre-composed default expansion (the
   # `expr` arg) instead of the fused kernel — no runtime fallback.
   defp lower_block(_struct, _in_args, expr, _t, state) do
     lower_node(expr, state)
   end
+
+  defp bool_int(true), do: 1
+  defp bool_int(false), do: 0
 
   defp float_like?({kind, _}) when kind in [:f, :bf, :c], do: true
   defp float_like?(_), do: false
