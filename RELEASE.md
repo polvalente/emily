@@ -8,3 +8,9 @@
   current one (e.g. an autoregressive decode loop), blocking only when a value
   is actually read back on the host via `to_binary/1` / `eval/1`. Pass every
   output of a step (logits plus all KV-cache buffers) in one call.
+- `Emily.Native.fast_rope_int/8` — RoPE with an **integer** absolute-position
+  `offset` (routing to MLX's int-offset `rope` overload), for incremental decode
+  where the caller tracks position host-side. Complements the existing
+  tensor-offset `fast_rope/8`. Note: feed the kernel the 4-D
+  `{batch, heads, seq, head_dim}` layout — in 3-D, MLX 0.31 mis-rotates
+  single-token (`seq == 1`) inputs.
