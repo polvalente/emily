@@ -97,8 +97,21 @@ defmodule Emily.IR do
     any: 51,
     # indexing / selection
     where: 52,
-    slice: 53
+    slice: 53,
+    # fused transformer kernels (mx::fast::*); float attrs are int64 bit
+    # patterns (float_bits/1).
+    fast_rms_norm: 54,
+    fast_layer_norm: 55,
+    fast_rope: 56,
+    fast_rope_freqs: 57,
+    fast_sdpa: 58,
+    fast_sdpa_mask: 59,
+    quantized_matmul: 60
   }
+
+  # Quant mode string -> code; decoded by qmode_from_code in
+  # c_src/emily/opcodes.hpp.
+  @quant_modes %{"affine" => 0, "mxfp4" => 1, "mxfp8" => 2, "nvfp4" => 3}
 
   @ref_kinds %{input: 0, capture: 1, const: 2, instr: 3}
   @ref_kinds_inverse Map.new(@ref_kinds, fn {k, v} -> {v, k} end)
@@ -140,6 +153,17 @@ defmodule Emily.IR do
   def dtype_code({kind, bits}) when is_map_key(@dtype_kind_codes, kind),
     do: Map.fetch!(@dtype_kind_codes, kind) * 256 + bits
 
+  @doc """
+  Encode a float as the signed int64 bit pattern carried in `iattrs`
+  (the IR's integer attribute channel). Decoded by `f64_from_bits` in
+  c_src/emily/opcodes.hpp.
+  """
+  @spec float_bits(number()) :: integer()
+  def float_bits(f) do
+    <<bits::signed-64-native>> = <<f * 1.0::float-64-native>>
+    bits
+  end
+
   @doc "Pack a tagged operand ref into the int64 the NIF expects."
   @spec pack_ref(ref()) :: non_neg_integer()
   def pack_ref({kind, index})
@@ -166,6 +190,8 @@ defmodule Emily.IR do
   # instructions instead of eager Native calls. Unsupported ops raise
   # (no silent fallback) per the compiler's no-fallback design.
 
+  alias Emily.Fast.Block, as: FB
+  alias Emily.Quantization.Block, as: QB
   alias Nx.Tensor, as: T
 
   # Nx Expr op -> IR opcode. Arithmetic/bitwise cast both operands to the
@@ -454,11 +480,107 @@ defmodule Emily.IR do
     |> materialize_const(t.shape, t.type, state)
   end
 
+  # Nx.block node: args [struct, in_args, expr, callback]. Known fused
+  # structs lower to their fused opcode (matching Emily.Backend.block/4,
+  # which the Evaluator dispatches through); unknown structs lower by
+  # recursing into `expr` — the pre-composed default expansion into
+  # primitives — so there is still no runtime fallback.
+  defp lower_op(
+         %T{data: %Nx.Defn.Expr{op: :block, args: [struct, in_args, expr, _cb]}} = t,
+         state
+       ) do
+    lower_block(struct, in_args, expr, t, state)
+  end
+
   defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) do
     raise ArgumentError,
           "Emily Expr compiler does not yet lower op #{inspect(op)} " <>
             "(no fallback). It will be added in a later milestone."
   end
+
+  defp lower_block(%FB.RMSNorm{eps: eps}, [x, weight], _expr, t, state) do
+    {rx, state} = lower_node(x, state)
+    {rw, state} = lower_node(weight, state)
+    emit_coerced(state, :fast_rms_norm, [rx, rw], [[float_bits(eps)]], t.type)
+  end
+
+  defp lower_block(%FB.LayerNorm{eps: eps}, [x, weight, bias], _expr, t, state) do
+    {rx, state} = lower_node(x, state)
+    {rw, state} = lower_node(weight, state)
+    {rb, state} = lower_node(bias, state)
+    emit_coerced(state, :fast_layer_norm, [rx, rw, rb], [[float_bits(eps)]], t.type)
+  end
+
+  defp lower_block(%FB.RoPE{} = b, [x, offset], _expr, t, state) do
+    {rx, state} = lower_node(x, state)
+    {ro, state} = lower_node(offset, state)
+
+    attrs = [[b.dims], [bool_int(b.traditional)], [float_bits(b.base)], [float_bits(b.scale)]]
+    emit_coerced(state, :fast_rope, [rx, ro], attrs, t.type)
+  end
+
+  defp lower_block(%FB.RoPEWithFreqs{} = b, [x, offset, freqs], _expr, t, state) do
+    {rx, state} = lower_node(x, state)
+    {ro, state} = lower_node(offset, state)
+    {rf, state} = lower_node(freqs, state)
+
+    attrs = [[b.dims], [bool_int(b.traditional)], [float_bits(b.scale)]]
+    emit_coerced(state, :fast_rope_freqs, [rx, ro, rf], attrs, t.type)
+  end
+
+  defp lower_block(%FB.SDPA{scale: scale, causal: causal}, [q, k, v], _expr, t, state) do
+    {rq, state} = lower_node(q, state)
+    {rk, state} = lower_node(k, state)
+    {rv, state} = lower_node(v, state)
+
+    emit_coerced(
+      state,
+      :fast_sdpa,
+      [rq, rk, rv],
+      [[float_bits(scale)], [bool_int(causal)]],
+      t.type
+    )
+  end
+
+  defp lower_block(%FB.SDPAWithMask{scale: scale}, [q, k, v, mask], _expr, t, state) do
+    {rq, state} = lower_node(q, state)
+    {rk, state} = lower_node(k, state)
+    {rv, state} = lower_node(v, state)
+    {rm, state} = lower_node(mask, state)
+    emit_coerced(state, :fast_sdpa_mask, [rq, rk, rv, rm], [[float_bits(scale)]], t.type)
+  end
+
+  defp lower_block(%QB.QuantizedMatmul{} = qb, [x, q, s, b], _expr, t, state) do
+    {rx, state} = lower_node(x, state)
+    {rq, state} = lower_node(q, state)
+    {rs, state} = lower_node(s, state)
+    {rb, state} = lower_node(b, state)
+
+    attrs = [
+      [bool_int(qb.transpose)],
+      [qb.group_size],
+      [qb.bits],
+      [Map.fetch!(@quant_modes, qb.mode)]
+    ]
+
+    emit_coerced(state, :quantized_matmul, [rx, rq, rs, rb], attrs, t.type)
+  end
+
+  # Any other block struct raises. Lowering the block's composed
+  # expansion would silently diverge from the Evaluator whenever
+  # Emily.Backend.block/4 dispatches that struct through a fused / native
+  # kernel (e.g. SDPAWithSinks, the Nx.Block.LinAlg.* / Take / FFT /
+  # cumulative families) — a worse failure than a clear "unsupported".
+  # Additional fused blocks are added alongside their opcode.
+  defp lower_block(struct, _in_args, _expr, _t, _state) do
+    raise ArgumentError,
+          "Emily Expr compiler does not yet lower the block " <>
+            "#{inspect(struct.__struct__)} (no fallback). Supported: RMSNorm, " <>
+            "LayerNorm, RoPE, RoPEWithFreqs, SDPA, SDPAWithMask, QuantizedMatmul."
+  end
+
+  defp bool_int(true), do: 1
+  defp bool_int(false), do: 0
 
   defp float_like?({kind, _}) when kind in [:f, :bf, :c], do: true
   defp float_like?(_), do: false
@@ -475,6 +597,14 @@ defmodule Emily.IR do
     ref = {:instr, state.n_instrs}
     instr = %{opcode: opcode, operands: operands, iattrs: iattrs}
     {ref, %{state | instrs: [instr | state.instrs], n_instrs: state.n_instrs + 1}}
+  end
+
+  # Emit an instruction then coerce its output to `type` (mirrors
+  # Emily.Backend.wrap/3). The trailing coerce is mandatory on every
+  # value-producing op, so the helper keeps the per-clause tail honest.
+  defp emit_coerced(state, opcode, operands, iattrs, type) do
+    {r, state} = emit(state, opcode, operands, iattrs)
+    coerce(r, type, state)
   end
 
   # Materialize an Nx tensor (already on a host backend) as a captured

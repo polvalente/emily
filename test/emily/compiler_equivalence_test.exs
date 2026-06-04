@@ -40,6 +40,11 @@ defmodule Emily.CompilerEquivalenceTest do
     native
   end
 
+  defp assert_in_delta_list(a, b, tol) do
+    assert length(a) == length(b)
+    Enum.zip(a, b) |> Enum.each(fn {x, y} -> assert_in_delta(x, y, tol) end)
+  end
+
   describe "unary elementwise" do
     test "float unary ops match the evaluator" do
       x = et([0.5, -1.25, 2.0, 0.1])
@@ -218,6 +223,105 @@ defmodule Emily.CompilerEquivalenceTest do
       x = et([0.0, 0.0, 0.0, 0.0])
       assert_equiv(fn t -> Nx.add(t, Nx.iota({4})) end, [x])
       assert_equiv(fn t -> Nx.add(t, Nx.iota({4}, type: :f32)) end, [x])
+    end
+  end
+
+  describe "fused kernels (Emily.Fast blocks)" do
+    test "rms_norm matches the fused kernel via the Evaluator" do
+      x = et([[0.1, 0.2, 0.3, 0.4], [1.0, -1.0, 2.0, -2.0]])
+      w = et([1.0, 1.0, 1.0, 1.0])
+      assert_equiv(fn x, w -> Emily.Fast.rms_norm(x, w) end, [x, w])
+      assert_equiv(fn x, w -> Emily.Fast.rms_norm(x, w, eps: 1.0e-5) end, [x, w])
+    end
+
+    test "layer_norm matches the fused kernel via the Evaluator" do
+      x = et([[0.1, 0.2, 0.3, 0.4], [1.0, -1.0, 2.0, -2.0]])
+      w = et([1.0, 0.5, 1.0, 0.5])
+      b = et([0.0, 0.1, 0.0, -0.1])
+      assert_equiv(fn x, w, b -> Emily.Fast.layer_norm(x, w, b) end, [x, w, b])
+    end
+
+    test "rms_norm composed inside a larger graph" do
+      x = et([[0.1, 0.2, 0.3, 0.4], [1.0, -1.0, 2.0, -2.0]])
+      w = et([1.0, 1.0, 1.0, 1.0])
+
+      assert_equiv(
+        fn x, w ->
+          x
+          |> Emily.Fast.rms_norm(w)
+          |> Nx.multiply(2.0)
+          |> Nx.add(1.0)
+        end,
+        [x, w]
+      )
+    end
+
+    test "rope matches the fused kernel" do
+      # {batch, heads, seq, head_dim}
+      x = Nx.iota({1, 2, 4, 8}, type: :f32, backend: Emily.Backend) |> Nx.divide(10.0)
+      offset = Nx.tensor(0, type: :s32, backend: Emily.Backend)
+
+      assert_equiv(fn x, off -> Emily.Fast.rope(x, off, dims: 8) end, [x, offset])
+      assert_equiv(fn x, off -> Emily.Fast.rope(x, off, dims: 8, base: 5000.0) end, [x, offset])
+    end
+
+    test "sdpa matches the fused kernel (causal and non-causal)" do
+      shape = {1, 2, 4, 8}
+      q = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+      k = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(48.0)
+      v = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(32.0)
+
+      assert_equiv(fn q, k, v -> Emily.Fast.scaled_dot_product_attention(q, k, v) end, [q, k, v])
+
+      assert_equiv(
+        fn q, k, v -> Emily.Fast.scaled_dot_product_attention(q, k, v, causal: true) end,
+        [q, k, v]
+      )
+    end
+
+    test "sdpa with an additive mask matches the fused kernel" do
+      shape = {1, 2, 4, 8}
+      q = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+      k = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(48.0)
+      v = Nx.iota(shape, type: :f32, backend: Emily.Backend) |> Nx.divide(32.0)
+      mask = Nx.broadcast(Nx.tensor(0.0, backend: Emily.Backend), {1, 1, 4, 4})
+
+      assert_equiv(
+        fn q, k, v, m -> Emily.Fast.scaled_dot_product_attention_with_mask(q, k, v, m) end,
+        [q, k, v, mask]
+      )
+    end
+  end
+
+  describe "quantized matmul block" do
+    test "affine int4 quantized_matmul_defn matches the Evaluator and the eager kernel" do
+      # weight {out=4, in=64}, transpose: true (MLX/from_dense default).
+      w = Nx.iota({4, 64}, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+      qw = Emily.QuantizedWeight.from_dense(w, group_size: 64, bits: 4)
+      x = Nx.iota({2, 64}, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+
+      # The QuantizedWeight (an Nx.Container) is passed as an argument so
+      # its tensors flow in as Expr parameters (device refs, no host copy).
+      f = fn x, qw -> Emily.Quantization.quantized_matmul_defn(x, qw) end
+
+      native = run(f, [x, qw], @native)
+      eval = run(f, [x, qw], @eval)
+
+      assert native.shape == {2, 4}
+      # Native single-NIF path vs Evaluator — both the fused kernel.
+      assert Nx.to_binary(native) == Nx.to_binary(eval)
+
+      # And it agrees with the eager quantized_matmul/2 (same kernel).
+      eager = Emily.Quantization.quantized_matmul(x, qw)
+      assert_in_delta_list(Nx.to_flat_list(native), Nx.to_flat_list(eager), 1.0e-4)
+    end
+
+    test "affine int8 quantized_matmul_defn matches the Evaluator" do
+      w = Nx.iota({3, 64}, type: :f32, backend: Emily.Backend) |> Nx.divide(96.0)
+      qw = Emily.QuantizedWeight.from_dense(w, group_size: 64, bits: 8)
+      x = Nx.iota({2, 64}, type: :f32, backend: Emily.Backend) |> Nx.divide(64.0)
+
+      assert_equiv(fn x, qw -> Emily.Quantization.quantized_matmul_defn(x, qw) end, [x, qw])
     end
   end
 
