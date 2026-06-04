@@ -266,22 +266,14 @@ defmodule Emily.IR do
   end
 
   defp lower_op(%T{data: %Nx.Defn.Expr{op: :constant, args: [number]}} = t, state) do
-    bin =
-      number
-      |> Nx.tensor(type: t.type, backend: Nx.BinaryBackend)
-      |> Nx.broadcast(t.shape)
-      |> Nx.to_binary()
-
-    ref = Emily.Native.from_binary(bin, Tuple.to_list(t.shape), t.type)
-    idx = state.n_consts
-    {{:const, idx}, %{state | consts: [ref | state.consts], n_consts: idx + 1}}
+    number
+    |> Nx.tensor(type: t.type, backend: Nx.BinaryBackend)
+    |> Nx.broadcast(t.shape)
+    |> materialize_const(t.shape, t.type, state)
   end
 
   defp lower_op(%T{data: %Nx.Defn.Expr{op: :tensor, args: [concrete]}}, state) do
-    bin = Nx.to_binary(concrete)
-    ref = Emily.Native.from_binary(bin, Tuple.to_list(concrete.shape), concrete.type)
-    idx = state.n_captures
-    {{:capture, idx}, %{state | captures: [ref | state.captures], n_captures: idx + 1}}
+    materialize_capture(concrete, concrete.shape, concrete.type, state)
   end
 
   defp lower_op(%T{data: %Nx.Defn.Expr{op: :metadata, args: [expr, _meta]}}, state) do
@@ -309,10 +301,15 @@ defmodule Emily.IR do
     emit(state, :astype, [r], [[dtype_code(t.type)]])
   end
 
-  defp lower_op(%T{data: %Nx.Defn.Expr{op: op, args: [a]}}, state)
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: op, args: [a]}} = t, state)
        when is_map_key(@unary_ops, op) do
     {ra, state} = lower_node(a, state)
-    emit(state, Map.fetch!(@unary_ops, op), [ra])
+    {r, state} = emit(state, Map.fetch!(@unary_ops, op), [ra])
+    # Coerce to out.type to match Emily.Backend.wrap/3 (every eager op is
+    # wrapped through coerce). MLX unary dtype usually equals Nx's
+    # out.type, so this is a no-op astype, but it keeps the node's dtype
+    # exact regardless of MLX promotion.
+    coerce(r, t.type, state)
   end
 
   defp lower_op(%T{data: %Nx.Defn.Expr{op: :as_type, args: [a]}} = t, state) do
@@ -452,14 +449,9 @@ defmodule Emily.IR do
   # iota: a pure creation op (shape/axis/type all static), so materialize
   # it as a captured constant instead of adding a runtime opcode.
   defp lower_op(%T{data: %Nx.Defn.Expr{op: :iota, args: [axis]}} = t, state) do
-    bin =
-      t.shape
-      |> Nx.iota(axis: axis, type: t.type, backend: Nx.BinaryBackend)
-      |> Nx.to_binary()
-
-    ref = Emily.Native.from_binary(bin, Tuple.to_list(t.shape), t.type)
-    idx = state.n_consts
-    {{:const, idx}, %{state | consts: [ref | state.consts], n_consts: idx + 1}}
+    t.shape
+    |> Nx.iota(axis: axis, type: t.type, backend: Nx.BinaryBackend)
+    |> materialize_const(t.shape, t.type, state)
   end
 
   defp lower_op(%T{data: %Nx.Defn.Expr{op: op}}, _state) do
@@ -483,5 +475,22 @@ defmodule Emily.IR do
     ref = {:instr, state.n_instrs}
     instr = %{opcode: opcode, operands: operands, iattrs: iattrs}
     {ref, %{state | instrs: [instr | state.instrs], n_instrs: state.n_instrs + 1}}
+  end
+
+  # Materialize an Nx tensor (already on a host backend) as a captured
+  # const / weight ref, held by the program for its lifetime. `:const`
+  # holds materialized literal constants (and iota); `:capture` holds
+  # embedded `:tensor` weights. Both go through from_binary once at
+  # lower time and are never re-shipped.
+  defp materialize_const(tensor, shape, type, state) do
+    ref = Emily.Native.from_binary(Nx.to_binary(tensor), Tuple.to_list(shape), type)
+    idx = state.n_consts
+    {{:const, idx}, %{state | consts: [ref | state.consts], n_consts: idx + 1}}
+  end
+
+  defp materialize_capture(tensor, shape, type, state) do
+    ref = Emily.Native.from_binary(Nx.to_binary(tensor), Tuple.to_list(shape), type)
+    idx = state.n_captures
+    {{:capture, idx}, %{state | captures: [ref | state.captures], n_captures: idx + 1}}
   end
 end

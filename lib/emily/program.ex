@@ -81,11 +81,11 @@ defmodule Emily.Program do
 
   @doc """
   Reflect a compiled program's stored IR back as
-  `{n_inputs, n_captures, n_consts, opcodes, operands, outputs}`, for
-  round-trip tests.
+  `{n_inputs, n_captures, n_consts, opcodes, operands, iattrs, outputs}`,
+  for round-trip tests.
   """
   @spec describe(t()) ::
           {non_neg_integer(), non_neg_integer(), non_neg_integer(), [integer()], [[integer()]],
-           [integer()]}
+           [[[integer()]]], [integer()]}
   def describe(program), do: Native.describe_program(program)
 end
