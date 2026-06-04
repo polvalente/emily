@@ -339,6 +339,26 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "dynamic put_slice (KV-cache write)" do
+    test "put_slice at a runtime offset matches the Evaluator" do
+      # {batch, n_kv_heads, max_len, head_dim} KV buffer; write one token.
+      buf = Nx.broadcast(Nx.tensor(0.0, backend: Emily.Backend), {1, 2, 6, 4})
+      upd = Nx.iota({1, 2, 1, 4}, type: :f32, backend: Emily.Backend) |> Nx.divide(10.0)
+      offset = Nx.tensor(3, type: :s32, backend: Emily.Backend)
+
+      assert_equiv(
+        fn buf, upd, off -> Nx.put_slice(buf, [0, 0, off, 0], upd) end,
+        [buf, upd, offset]
+      )
+    end
+
+    test "put_slice with all-static starts matches" do
+      buf = Nx.broadcast(Nx.tensor(0.0, backend: Emily.Backend), {4, 4})
+      upd = Nx.iota({2, 2}, type: :f32, backend: Emily.Backend) |> Nx.add(1.0)
+      assert_equiv(fn buf, upd -> Nx.put_slice(buf, [1, 1], upd) end, [buf, upd])
+    end
+  end
+
   describe "two-layer MLP forward (matmul-dominated)" do
     test "matches the evaluator end-to-end" do
       x = et([[0.1, 0.2, 0.3, 0.4]])

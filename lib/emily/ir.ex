@@ -107,7 +107,9 @@ defmodule Emily.IR do
     fast_sdpa: 58,
     fast_sdpa_mask: 59,
     quantized_matmul: 60,
-    take: 61
+    take: 61,
+    concatenate: 62,
+    dyn_slice_update: 63
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -473,6 +475,29 @@ defmodule Emily.IR do
     coerce(r, t.type, state)
   end
 
+  # put_slice(src, start_indices, slice): write `slice` into `src` at
+  # `start_indices`. Mirrors Emily.Backend.put_slice/4 (cast src + update
+  # to out.type), but supports RUNTIME (tensor) start indices — the decode
+  # KV write at a dynamic offset. Builds an s32 start array from the mixed
+  # int / scalar-tensor entries and uses MLX's dynamic slice_update.
+  defp lower_op(
+         %T{data: %Nx.Defn.Expr{op: :put_slice, args: [src, start_indices, slice]}} = t,
+         state
+       ) do
+    type = t.type
+    {rsrc, state} = lower_node(src, state)
+    {rsrc, state} = emit(state, :astype, [rsrc], [[dtype_code(type)]])
+    {rupd, state} = lower_node(slice, state)
+    {rupd, state} = emit(state, :astype, [rupd], [[dtype_code(type)]])
+
+    # One s32 [1] scalar per axis; concatenate into the [ndim] start array.
+    {start_refs, state} = Enum.map_reduce(start_indices, state, &lower_start_index/2)
+    {start_arr, state} = emit(state, :concatenate, start_refs, [[0]])
+
+    axes = Enum.to_list(0..(tuple_size(t.shape) - 1))
+    emit_coerced(state, :dyn_slice_update, [rsrc, rupd, start_arr], [axes], type)
+  end
+
   # iota: a pure creation op (shape/axis/type all static), so materialize
   # it as a captured constant instead of adding a runtime opcode.
   defp lower_op(%T{data: %Nx.Defn.Expr{op: :iota, args: [axis]}} = t, state) do
@@ -632,5 +657,19 @@ defmodule Emily.IR do
     ref = Emily.Native.from_binary(Nx.to_binary(tensor), Tuple.to_list(shape), type)
     idx = state.n_captures
     {{:capture, idx}, %{state | captures: [ref | state.captures], n_captures: idx + 1}}
+  end
+
+  # One s32 `[1]` start index per put_slice axis. Integer starts become a
+  # const `[1]` scalar; scalar-tensor (dynamic) starts are cast to s32 and
+  # reshaped to `[1]`. The caller concatenates them into the `[ndim]` start
+  # array MLX's dynamic slice_update consumes.
+  defp lower_start_index(i, state) when is_integer(i) do
+    materialize_const(Nx.tensor([i], type: :s32, backend: Nx.BinaryBackend), {1}, {:s, 32}, state)
+  end
+
+  defp lower_start_index(%T{} = expr, state) do
+    {r, state} = lower_node(expr, state)
+    {r, state} = emit(state, :astype, [r], [[dtype_code({:s, 32})]])
+    emit(state, :reshape, [r], [[1]])
   end
 end
