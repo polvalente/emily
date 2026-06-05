@@ -110,7 +110,14 @@ defmodule Emily.IR do
     take: 61,
     concatenate: 62,
     dyn_slice_update: 63,
-    conv_general: 64
+    conv_general: 64,
+    # selection / sort (iattrs: argmax/argmin [[axis],[keepdims]]; sort/argsort [[axis]])
+    argmax: 65,
+    argmin: 66,
+    clip: 67,
+    sort: 68,
+    argsort: 69,
+    flip: 70
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -393,6 +400,49 @@ defmodule Emily.IR do
     axes = opts[:axes] || Nx.axes(a)
     keep = if(opts[:keep_axes], do: 1, else: 0)
     {r, state} = emit(state, Map.fetch!(@reductions, op), [ra], [axes, [keep]])
+    coerce(r, t.type, state)
+  end
+
+  # argmax / argmin: args [tensor, opts]. axis defaults to 0; keepdims is
+  # derived from whether the output kept the reduced axis (mirrors
+  # Emily.Backend.argmax/3, then a coerce to the integer out.type). MLX
+  # argmax/argmin is first-occurrence, matching Nx's default `tie_break:
+  # :low`; like the backend we don't special-case `:tie_break`.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: op, args: [a, opts]}} = t, state)
+       when op in [:argmax, :argmin] do
+    {ra, state} = lower_node(a, state)
+    axis = opts[:axis] || 0
+    keep = if(tuple_size(t.shape) == tuple_size(a.shape), do: 1, else: 0)
+    {r, state} = emit(state, op, [ra], [[axis], [keep]])
+    coerce(r, t.type, state)
+  end
+
+  # clip(t, min, max): element-wise clamp. Mirrors Emily.Backend.clip/4 —
+  # the three operands pass straight to mx::clip, result coerced to out.type.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :clip, args: [a, min, max]}} = t, state) do
+    {ra, state} = lower_node(a, state)
+    {rmin, state} = lower_node(min, state)
+    {rmax, state} = lower_node(max, state)
+    emit_coerced(state, :clip, [ra, rmin, rmax], [], t.type)
+  end
+
+  # sort / argsort: args [tensor, opts] with :axis and :direction. MLX sorts
+  # ascending; `:desc` reverses along the axis with a negative-stride slice —
+  # exactly Emily.Backend.{sort,argsort}/3's `Native.flip`. The trailing
+  # coerce is a no-op astype for sort (dtype-preserving) and the index cast
+  # for argsort.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: op, args: [a, opts]}} = t, state)
+       when op in [:sort, :argsort] do
+    {ra, state} = lower_node(a, state)
+    axis = opts[:axis] || 0
+    {r, state} = emit(state, op, [ra], [[axis]])
+
+    {r, state} =
+      case opts[:direction] || :asc do
+        :asc -> {r, state}
+        :desc -> emit(state, :flip, [r], [[axis]])
+      end
+
     coerce(r, t.type, state)
   end
 

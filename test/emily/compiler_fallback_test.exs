@@ -15,10 +15,13 @@ defmodule Emily.CompilerFallbackTest do
   use ExUnit.Case, async: true
   import Nx.Defn
 
-  # `Nx.sort` is not lowered by the Expr compiler yet (CM7) but IS
-  # supported by `Emily.Backend`, so the evaluator path produces a correct
-  # result to compare against.
-  defn(sort_fn(x), do: Nx.sort(x))
+  # `Nx.reduce` with an arbitrary BEAM reducer can never lower to the
+  # single-NIF replay (the reducer would have to run on the host mid-graph),
+  # so it is a *stable* example of an op the compiler routes to the
+  # evaluator — unlike a specific primitive, which a later milestone may
+  # teach the IR to lower. The evaluator runs it via `Emily.Backend`, so the
+  # fallback result is correct (reduce-with-add == sum).
+  defp unsupported_fun, do: fn x -> Nx.reduce(x, 0.0, fn a, b -> Nx.add(a, b) end) end
 
   # Fully supported by the IR — must still compile native, no fallback.
   defn(supported_fn(x), do: Nx.add(Nx.multiply(x, 2.0), 1.0))
@@ -38,14 +41,13 @@ defmodule Emily.CompilerFallbackTest do
 
   describe "native_fallback: :eval (graceful, the runtime default)" do
     test "an unsupported op falls back to the evaluator and matches it" do
+      fun = unsupported_fun()
       x = t([3.0, 1.0, 2.0, 0.0])
 
       native =
-        Nx.Defn.jit(&sort_fn/1, compiler: Emily.Compiler, native: true, native_fallback: :eval).(
-          x
-        )
+        Nx.Defn.jit(fun, compiler: Emily.Compiler, native: true, native_fallback: :eval).(x)
 
-      eval = Nx.Defn.jit(&sort_fn/1, compiler: Emily.Compiler).(x)
+      eval = Nx.Defn.jit(fun, compiler: Emily.Compiler).(x)
 
       assert %Emily.Backend{} = native.data
       assert Nx.to_binary(native) == Nx.to_binary(eval)
@@ -55,12 +57,14 @@ defmodule Emily.CompilerFallbackTest do
       ref = make_ref()
       attach([:emily, :compiler, :fallback], ref)
 
-      Nx.Defn.jit(&sort_fn/1, compiler: Emily.Compiler, native: true, native_fallback: :eval).(
-        t([2.0, 1.0])
-      )
+      Nx.Defn.jit(unsupported_fun(),
+        compiler: Emily.Compiler,
+        native: true,
+        native_fallback: :eval
+      ).(t([2.0, 1.0]))
 
       assert_receive {^ref, :event, %{count: 1}, %{reason: reason}}
-      assert reason =~ "sort"
+      assert reason =~ "reduce"
     end
 
     test "a fully supported defn compiles native rather than falling back" do
@@ -86,10 +90,12 @@ defmodule Emily.CompilerFallbackTest do
 
   describe "native_fallback: :raise (strict, the conformance-gate mode)" do
     test "an unsupported op raises rather than falling back" do
-      assert_raise ArgumentError, ~r/sort/, fn ->
-        Nx.Defn.jit(&sort_fn/1, compiler: Emily.Compiler, native: true, native_fallback: :raise).(
-          t([1.0, 2.0])
-        )
+      assert_raise ArgumentError, ~r/reduce/, fn ->
+        Nx.Defn.jit(unsupported_fun(),
+          compiler: Emily.Compiler,
+          native: true,
+          native_fallback: :raise
+        ).(t([1.0, 2.0]))
       end
     end
   end

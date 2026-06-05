@@ -43,6 +43,13 @@
   `config :emily, native_fallback: :raise`) to fail instead — the conformance
   suites use this to prove a model lowers fully native.
 
+- **More ops lower natively** — `argmax`/`argmin`, `clip`, and `sort`/`argsort`
+  (ascending and descending) now compile under the native single-NIF path
+  rather than routing through the fallback, each mirroring its `Emily.Backend`
+  callback bit-for-bit. `argmax` in particular puts greedy-decode token
+  selection on the native path. Remaining gaps (`gather`/scatter,
+  pooling/`window_*`, cumulative) continue to work via the graceful fallback.
+
 - `Emily.async_eval/1` (and `Emily.Native.async_eval/2`) schedule evaluation of
   one or more lazy graphs **without blocking on the GPU**, wrapping
   `mlx::core::async_eval`. The work is handed to the device's command queue and
