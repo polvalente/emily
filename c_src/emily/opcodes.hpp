@@ -116,9 +116,20 @@ enum class Opcode : int64_t {
   // operands [input(NHWC), kernel(OHWI)]; iattrs [[stride],[pad_lo],
   // [pad_hi],[kernel_dilation],[input_dilation],[groups],[flip]]
   ConvGeneral = 64,
+  // Index-of-extremum reductions. operands [a]; iattrs [[axis],[keepdims]]
+  Argmax = 65,
+  Argmin = 66,
+  // Element-wise clamp. operands [a, lo, hi]
+  Clip = 67,
+  // Sort along an axis (ascending; the lowerer composes a Flip for :desc).
+  // operands [a]; iattrs [[axis]]
+  Sort = 68,
+  Argsort = 69,
+  // Reverse along one axis (negative-stride slice). operands [a]; iattrs [[axis]]
+  Flip = 70,
 };
 
-inline constexpr int64_t kOpcodeCount = 65;
+inline constexpr int64_t kOpcodeCount = 71;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -494,6 +505,32 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
         emily::to_int_vec(attr_at(iattrs, 3, "conv_general")),
         emily::to_int_vec(attr_at(iattrs, 4, "conv_general")), groups, flip, s);
   }
+  // --- Selection / sort ---
+  case Opcode::Argmax:
+    return mx::argmax(arg1(in, "argmax"),
+                      emily::checked_int(scalar_at(iattrs, 0, "argmax"), "axis"),
+                      keepdims_attr(iattrs, "argmax"), s);
+  case Opcode::Argmin:
+    return mx::argmin(arg1(in, "argmin"),
+                      emily::checked_int(scalar_at(iattrs, 0, "argmin"), "axis"),
+                      keepdims_attr(iattrs, "argmin"), s);
+  case Opcode::Clip:
+    if (in.size() != 3) {
+      throw std::invalid_argument("clip expects 3 operands, got " +
+                                  std::to_string(in.size()));
+    }
+    return mx::clip(in[0], in[1], in[2], s);
+  case Opcode::Sort:
+    return mx::sort(arg1(in, "sort"),
+                    emily::checked_int(scalar_at(iattrs, 0, "sort"), "axis"), s);
+  case Opcode::Argsort:
+    return mx::argsort(arg1(in, "argsort"),
+                       emily::checked_int(scalar_at(iattrs, 0, "argsort"), "axis"),
+                       s);
+  case Opcode::Flip:
+    // Reverse along one axis — shared core with the eager flip_nif.
+    return emily::ops::flip_core(arg1(in, "flip"), scalar_at(iattrs, 0, "flip"),
+                                 s);
   }
   throw std::invalid_argument("unknown opcode " +
                               std::to_string(static_cast<int64_t>(op)));
