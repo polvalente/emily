@@ -271,7 +271,8 @@ defmodule Emily.Compiler do
   # Strip the Emily-only native knobs before delegating to the Evaluator
   # — it ignores keys it doesn't consume, but handing it `native: true`
   # when we've decided *not* to compile natively would be misleading.
-  defp drop_native_opts(opts), do: Keyword.drop(opts, [:native, :native_fallback])
+  defp drop_native_opts(opts),
+    do: Keyword.drop(opts, [:native, :native_fallback, :native_compiled])
 
   defp native_ref(%T{data: %B{ref: r}}), do: r
   defp native_ref(%T{} = t), do: Nx.backend_transfer(t, B).data.ref
