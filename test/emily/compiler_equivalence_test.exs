@@ -366,6 +366,73 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "misc Nx.Block lowerings" do
+    # Nx.logical_not (Nx.Block.LogicalNot) — emits the IR :logical_not
+    # opcode directly, mirroring Emily.Backend.native_logical_not/2. The
+    # trailing coerce produces the {:u, 8} predicate dtype.
+    test "logical_not matches the evaluator and produces u8" do
+      out = assert_equiv(&Nx.logical_not/1, [et([0, 1, 2, 0, 3], type: :s32)])
+      assert out.type == {:u, 8}
+
+      assert_equiv(&Nx.logical_not/1, [et([0.0, 1.0, -1.5, 0.0])])
+    end
+
+    # Nx.all_close (Nx.Block.AllClose) — the IR composes the same five
+    # primitive sequence as Emily.Backend.native_all_close/4, so the
+    # output bit pattern is identical to the evaluator. Exercise the
+    # close, far, default-tolerance, custom-tolerance, and equal_nan
+    # branches.
+    test "all_close on close inputs returns 1 (within default tolerance)" do
+      a = et([1.0, 2.0, 3.0])
+      b = et([1.0 + 1.0e-6, 2.0 + 1.0e-6, 3.0 - 1.0e-6])
+      out = assert_equiv(&Nx.all_close/2, [a, b])
+      assert out.type == {:u, 8}
+    end
+
+    test "all_close on far inputs returns 0" do
+      a = et([1.0, 2.0, 3.0])
+      b = et([1.0, 2.0, 99.0])
+      assert_equiv(&Nx.all_close/2, [a, b])
+    end
+
+    test "all_close with custom rtol/atol matches" do
+      a = et([1.0, 2.0, 3.0])
+      b = et([1.1, 2.0, 3.0])
+      assert_equiv(fn a, b -> Nx.all_close(a, b, atol: 0.2) end, [a, b])
+      assert_equiv(fn a, b -> Nx.all_close(a, b, atol: 0.05) end, [a, b])
+    end
+
+    test "all_close with equal_nan: true matches (NaN compares equal to NaN)" do
+      a = et([1.0, :nan, 3.0])
+      b = et([1.0, :nan, 3.0])
+      assert_equiv(fn a, b -> Nx.all_close(a, b, equal_nan: true) end, [a, b])
+      assert_equiv(fn a, b -> Nx.all_close(a, b, equal_nan: false) end, [a, b])
+    end
+
+    # Nx.phase (Nx.Block.Phase) := atan2(imag(t), real(t)). Backend
+    # falls through to the composed expansion (no fused kernel); the IR
+    # lowers the same expansion via the TopK-style param-seeding, so the
+    # result is bit-identical to the evaluator. Exercise the four
+    # quadrants plus the real axis (phase == 0 for real, ±pi for
+    # negative real) and the imaginary axis (±pi/2).
+    test "phase matches the evaluator across the four complex quadrants" do
+      x =
+        et([
+          Complex.new(1.0, 1.0),
+          Complex.new(-1.0, 1.0),
+          Complex.new(-1.0, -1.0),
+          Complex.new(1.0, -1.0),
+          Complex.new(2.0, 0.0),
+          Complex.new(-2.0, 0.0),
+          Complex.new(0.0, 3.0),
+          Complex.new(0.0, -3.0)
+        ])
+
+      out = assert_equiv(&Nx.phase/1, [x])
+      assert out.type == {:f, 32}
+    end
+  end
+
   describe "pad / triangular_solve" do
     # pad with constant value matches Emily.Backend.pad/4 (mx::pad with
     # mode "constant", no interior dilation). Cover symmetric and
