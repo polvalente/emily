@@ -77,6 +77,17 @@
   `mx::linalg::solve_triangular` to the CPU stream per call (it's
   CPU-only), matching the eager NIF.
 
+- **`Nx.Block.LogicalNot`, `Nx.Block.AllClose`, `Nx.Block.Phase` lower
+  natively** — closes the misc-block cluster on #188. No new opcodes:
+  `LogicalNot` emits the existing `:logical_not` op directly (same as
+  `Emily.Backend.native_logical_not/2`); `AllClose` composes five
+  existing primitives — `astype` → `abs(a - b) <= atol + rtol * abs(b)`
+  → optional `isnan` OR for `equal_nan: true` → reduce-all — exactly
+  matching `Emily.Backend.native_all_close/4`; `Phase` lowers the
+  block's `atan2(imag(t), real(t))` expansion via TopK-style parameter
+  seeding (every primitive in the expansion was already on the native
+  path), bit-identical to the Evaluator.
+
 - **`take_along_axis` lowers natively** — `Nx.take_along_axis` (the
   `Nx.Block.TakeAlongAxis` block) now compiles under the native single-NIF
   path, mirroring `Emily.Backend.native_take_along_axis/4` (cast indices to

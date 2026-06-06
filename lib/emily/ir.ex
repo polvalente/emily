@@ -1354,6 +1354,80 @@ defmodule Emily.IR do
     {{:multi_refs, leaf_refs}, state}
   end
 
+  # Nx.logical_not (Nx.Block.LogicalNot). Mirrors
+  # Emily.Backend.native_logical_not/2 — emit the :logical_not opcode
+  # directly (MLX returns bool), trailing coerce produces {:u, 8}.
+  defp lower_block(%Nx.Block.LogicalNot{}, [t], _expr, out, state) do
+    {rt, state} = lower_node(t, state)
+    emit_coerced(state, :logical_not, [rt], [], out.type)
+  end
+
+  # Nx.all_close (Nx.Block.AllClose). Mirrors
+  # Emily.Backend.native_all_close/4 op-for-op so the native and eager
+  # paths land on identical bits: cast both to the merged float type,
+  # compute `abs(a - b) <= atol + rtol * abs(b)`, optionally OR with the
+  # `equal_nan` mask (`isnan(a) AND isnan(b)`), then reduce over every
+  # axis via `:all`.
+  defp lower_block(
+         %Nx.Block.AllClose{equal_nan: equal_nan, rtol: rtol, atol: atol},
+         [a, b],
+         _expr,
+         out,
+         state
+       ) do
+    {ra, state} = lower_node(a, state)
+    {rb, state} = lower_node(b, state)
+
+    merged = Nx.Type.merge(a.type, b.type) |> Nx.Type.to_floating()
+    code = dtype_code(merged)
+    {ra, state} = emit(state, :astype, [ra], [[code]])
+    {rb, state} = emit(state, :astype, [rb], [[code]])
+
+    {diff_raw, state} = emit(state, :subtract, [ra, rb])
+    {diff, state} = emit(state, :abs, [diff_raw])
+
+    {atol_ref, state} = scalar_const(atol, merged, state)
+    {rtol_ref, state} = scalar_const(rtol, merged, state)
+    {abs_b, state} = emit(state, :abs, [rb])
+    {rtol_x_abs_b, state} = emit(state, :multiply, [rtol_ref, abs_b])
+    {tol, state} = emit(state, :add, [atol_ref, rtol_x_abs_b])
+
+    {close, state} = emit(state, :less_equal, [diff, tol])
+
+    {close, state} =
+      if equal_nan do
+        {na, state} = emit(state, :isnan, [ra])
+        {nb, state} = emit(state, :isnan, [rb])
+        {both_nan, state} = emit(state, :logical_and, [na, nb])
+        emit(state, :logical_or, [close, both_nan])
+      else
+        {close, state}
+      end
+
+    axes = Enum.to_list(0..(tuple_size(a.shape) - 1)//1)
+    {result, state} = emit(state, :all, [close], [axes, [0]])
+    coerce(result, out.type, state)
+  end
+
+  # Nx.phase (Nx.Block.Phase) := atan2(imag(t), real(t)). Backend
+  # falls through to the composed expansion (no fused kernel); the IR
+  # does the same here, bound to the real in_args via the TopK-style
+  # parameter seeding (block-local :parameter nodes are FRESH and would
+  # otherwise resolve to the outer function's input slots). All three
+  # primitives in the expansion (atan2/imag/real) already lower
+  # natively, so the result is bit-identical to the Evaluator.
+  defp lower_block(%Nx.Block.Phase{}, [t], expr, _out, state) do
+    {arg_ref, state} = lower_node(t, state)
+
+    seed =
+      expr
+      |> collect_block_params(%{})
+      |> Map.new(fn {id, 0} -> {id, arg_ref} end)
+
+    state = %{state | cache: Map.merge(state.cache, seed)}
+    lower_node(expr, state)
+  end
+
   # Any other block struct raises. Lowering the block's composed
   # expansion would silently diverge from the Evaluator whenever
   # Emily.Backend.block/4 dispatches that struct through a fused / native
