@@ -145,7 +145,15 @@ defmodule Emily.IR do
     # window select-and-scatter (pooling backward). operands
     # [input, source, init]; iattrs [[window],[strides],[pad_lo],[pad_hi]].
     window_scatter_max: 86,
-    window_scatter_min: 87
+    window_scatter_min: 87,
+    # FFT family — n-D transforms. operands [input]; iattrs
+    # [[sizes...],[axes...]]. `fft`/`ifft` (1-D, last axis) and the
+    # `fft2`/`ifft2`/`rfft`/`irfft` blocks all route here. Unnormalized
+    # (`FFTNorm::Backward`) is baked C++-side, matching Nx / the eager NIFs.
+    fftn: 88,
+    ifftn: 89,
+    rfftn: 90,
+    irfftn: 91
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -496,6 +504,19 @@ defmodule Emily.IR do
       end
 
     coerce(r, t.type, state)
+  end
+
+  # 1-D FFT / inverse FFT (Nx.fft / Nx.ifft). Mirrors Emily.Backend.{fft,
+  # ifft}/3: route through the n-D MLX kernel restricted to one axis. The
+  # eager path uses the trailing axis and ignores `opts[:axis]`, so we do
+  # too — keeping native bit-identical to the evaluator. Output is complex
+  # (`Nx.Type.to_complex/1`); the trailing coerce matches the backend `wrap`.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: op, args: [a, opts]}} = t, state)
+       when op in [:fft, :ifft] do
+    {ra, state} = lower_node(a, state)
+    axis = tuple_size(a.shape) - 1
+    opcode = if op == :fft, do: :fftn, else: :ifftn
+    emit_coerced(state, opcode, [ra], [[opts[:length]], [axis]], t.type)
   end
 
   # Non-batched dot -> tensordot over the contraction axes.
@@ -1012,10 +1033,35 @@ defmodule Emily.IR do
     end
   end
 
+  # FFT family blocks (Nx.fft2 / ifft2 / rfft / irfft). Each mirrors the
+  # matching Emily.Backend.native_* wrapper: route through the n-D MLX
+  # fft/ifft/rfft/irfft kernel with the block's sizes + axes, then coerce to
+  # out.type (complex for the forward transforms, real for irfft). The
+  # block's `eps` is unused (MLX needs none), as in the eager path.
+  defp lower_block(%Nx.Block.FFT2{lengths: lengths, axes: axes}, [t], _expr, out, state) do
+    {rt, state} = lower_node(t, state)
+    emit_coerced(state, :fftn, [rt], [lengths, axes], out.type)
+  end
+
+  defp lower_block(%Nx.Block.IFFT2{lengths: lengths, axes: axes}, [t], _expr, out, state) do
+    {rt, state} = lower_node(t, state)
+    emit_coerced(state, :ifftn, [rt], [lengths, axes], out.type)
+  end
+
+  defp lower_block(%Nx.Block.RFFT{length: length, axis: axis}, [t], _expr, out, state) do
+    {rt, state} = lower_node(t, state)
+    emit_coerced(state, :rfftn, [rt], [[length], [axis]], out.type)
+  end
+
+  defp lower_block(%Nx.Block.IRFFT{length: length, axis: axis}, [t], _expr, out, state) do
+    {rt, state} = lower_node(t, state)
+    emit_coerced(state, :irfftn, [rt], [[length], [axis]], out.type)
+  end
+
   # Any other block struct raises. Lowering the block's composed
   # expansion would silently diverge from the Evaluator whenever
   # Emily.Backend.block/4 dispatches that struct through a fused / native
-  # kernel (e.g. SDPAWithSinks, the Nx.Block.LinAlg.* / FFT families) — a
+  # kernel (e.g. SDPAWithSinks, the Nx.Block.LinAlg.* families) — a
   # worse failure than a clear "unsupported".
   # Additional fused blocks are added alongside their opcode.
   defp lower_block(struct, _in_args, _expr, _t, _state) do
