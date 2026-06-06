@@ -168,9 +168,16 @@ enum class Opcode : int64_t {
   // [[window...],[strides...],[pad_lo...],[pad_hi...]] (no dilations)
   WindowScatterMax = 86,
   WindowScatterMin = 87,
+  // FFT family — n-dimensional transforms over the given sizes/axes, with
+  // FFTNorm::Backward (unnormalized), matching Nx + the eager fft NIFs.
+  // operands [input]; iattrs [[sizes...], [axes...]].
+  Fftn = 88,   // complex/real -> complex
+  Ifftn = 89,  // complex -> complex (inverse)
+  Rfftn = 90,  // real -> complex (half spectrum)
+  Irfftn = 91, // complex half-spectrum -> real
 };
 
-inline constexpr int64_t kOpcodeCount = 88;
+inline constexpr int64_t kOpcodeCount = 92;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -663,6 +670,27 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     }
     return mx::stack(in, emily::checked_int(scalar_at(iattrs, 0, "stack"), "axis"),
                      s);
+  // --- FFT family (shares the eager fft.cpp entry points) ---
+  case Opcode::Fftn:
+    return mx::fft::fftn(arg1(in, "fftn"),
+                         emily::to_mlx_shape(attr_at(iattrs, 0, "fftn")),
+                         emily::to_int_vec(attr_at(iattrs, 1, "fftn")),
+                         mx::fft::FFTNorm::Backward, s);
+  case Opcode::Ifftn:
+    return mx::fft::ifftn(arg1(in, "ifftn"),
+                          emily::to_mlx_shape(attr_at(iattrs, 0, "ifftn")),
+                          emily::to_int_vec(attr_at(iattrs, 1, "ifftn")),
+                          mx::fft::FFTNorm::Backward, s);
+  case Opcode::Rfftn:
+    return mx::fft::rfftn(arg1(in, "rfftn"),
+                          emily::to_mlx_shape(attr_at(iattrs, 0, "rfftn")),
+                          emily::to_int_vec(attr_at(iattrs, 1, "rfftn")),
+                          mx::fft::FFTNorm::Backward, s);
+  case Opcode::Irfftn:
+    return mx::fft::irfftn(arg1(in, "irfftn"),
+                           emily::to_mlx_shape(attr_at(iattrs, 0, "irfftn")),
+                           emily::to_int_vec(attr_at(iattrs, 1, "irfftn")),
+                           mx::fft::FFTNorm::Backward, s);
   }
   throw std::invalid_argument("unknown opcode " +
                               std::to_string(static_cast<int64_t>(op)));

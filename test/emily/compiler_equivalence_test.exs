@@ -476,6 +476,45 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "fft family (signal transforms)" do
+    test "1-D fft / ifft on the trailing axis match the evaluator" do
+      x = et([1.0, 2.0, 3.0, 4.0])
+      assert_equiv(fn t -> Nx.fft(t) end, [x])
+      assert_equiv(fn t -> Nx.ifft(t) end, [x])
+    end
+
+    test "fft with explicit length (zero-pad / truncate) matches" do
+      x = et([1.0, 2.0, 3.0, 4.0, 5.0])
+      assert_equiv(fn t -> Nx.fft(t, length: 8) end, [x])
+      assert_equiv(fn t -> Nx.fft(t, length: 4) end, [x])
+    end
+
+    test "batched 1-D fft transforms the last axis only" do
+      x = et([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+      assert_equiv(fn t -> Nx.fft(t) end, [x])
+    end
+
+    test "ifft(fft(x)) round-trips through a complex intermediate" do
+      x = et([1.0, -2.0, 3.0, -4.0])
+      out = assert_equiv(fn t -> Nx.ifft(Nx.fft(t)) end, [x])
+      assert out.type == {:c, 64}
+    end
+
+    test "2-D fft2 / ifft2 (Nx.Block) match" do
+      x = et([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]])
+      assert_equiv(fn t -> Nx.fft2(t) end, [x])
+      assert_equiv(fn t -> Nx.ifft2(t) end, [x])
+    end
+
+    test "rfft (real -> half spectrum) and irfft (back to real) match" do
+      x = et([1.0, 2.0, 3.0, 4.0])
+      out = assert_equiv(fn t -> Nx.rfft(t) end, [x])
+      assert out.type == {:c, 64}
+      # irfft takes the complex half-spectrum back to a real signal.
+      assert_equiv(fn t -> Nx.irfft(Nx.rfft(t)) end, [x])
+    end
+  end
+
   describe "dynamic put_slice (KV-cache write)" do
     test "put_slice at a runtime offset matches the Evaluator" do
       # {batch, n_kv_heads, max_len, head_dim} KV buffer; write one token.
