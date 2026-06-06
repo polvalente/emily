@@ -1,13 +1,21 @@
 # Qwen3-0.6B greedy-decode throughput on `Emily.Backend`.
 #
-# Reports two lanes by default and prints the speedup between them:
+# Reports three lanes by default and prints the speedups between them:
 #
-#   * baseline — the op-by-op `Nx.Defn.Evaluator` walk.
-#   * native   — the single-NIF `Emily.Compiler` (`native: true`): the whole
-#                generation graph, including the `defn while` decode loop,
-#                replays as one NIF call per step. Run with
-#                `native_fallback: :raise`, so the number is a true
-#                full-native measurement, not a silent fallback.
+#   * baseline     — the op-by-op `Nx.Defn.Evaluator` walk.
+#   * native       — the single-NIF `Emily.Compiler` (`native: true`): the
+#                    whole generation graph, including the `defn while` decode
+#                    loop, replays as one NIF call per step. Run with
+#                    `native_fallback: :raise`, so the number is a true
+#                    full-native measurement, not a silent fallback.
+#   * native-fused — the native lane plus `native_compiled: true` (CM14): the
+#                    decode loop stays host-controlled, but each loop *body*
+#                    (the per-token forward) replays through a per-stream-cached
+#                    `mx::compile`'d callable, fusing the elementwise runs the
+#                    plain replay leaves separate (RMSNorm/softmax/SiLU gating/
+#                    residual adds). `mx::compile` reassociates f32, so this
+#                    lane is NOT bit-identical to the others — greedy token ids
+#                    still match the evaluator, but logits drift a few ULP.
 #
 # (The opt-in `EMILY_BENCH_FAST_KERNELS` lane is orthogonal — it benches the
 # fused MLX kernels under the evaluator.)
@@ -131,7 +139,29 @@ defmodule Emily.Bench.Qwen3 do
         cfg
       )
 
-    IO.puts("\nnative speedup : #{Float.round(native_mean / baseline_mean, 2)}× over the evaluator")
+    # The fused-while lane: same no-fallback native compile, but the decode
+    # loop body is replayed through a cached `mx::compile`'d callable. Not
+    # bit-identical (f32 reassociation), so it is the opt-in lane — greedy
+    # token ids still match, logits drift a few ULP.
+    {fused_native_mean, _, _, _} =
+      bench(
+        "native-fused (mx::compile'd while body)",
+        model_info,
+        [
+          compiler: Emily.Compiler,
+          native: true,
+          native_fallback: :raise,
+          native_compiled: true
+        ],
+        cfg
+      )
+
+    IO.puts("\nnative speedup       : #{Float.round(native_mean / baseline_mean, 2)}× over the evaluator")
+
+    IO.puts(
+      "native-fused speedup : #{Float.round(fused_native_mean / baseline_mean, 2)}× over the evaluator, " <>
+        "#{Float.round(fused_native_mean / native_mean, 2)}× over the native lane"
+    )
 
     if fast_kernels? do
       unless Code.ensure_loaded?(Emily.Bumblebee.FastKernels) do

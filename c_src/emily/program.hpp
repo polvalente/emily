@@ -93,8 +93,12 @@ public:
   // different one. Built lazily on the first compiled eval (eval_mode 3).
   // This is the *secondary* encode win; the main dispatch-collapse win is
   // the single-NIF replay itself.
-  std::mutex compile_mtx;
-  std::map<int, CompiledEntry> compiled;
+  //
+  // `mutable`: the cache is pure memoization, so it is filled even through a
+  // `const Program &` — the `while` arm of the replay compiles its *child*
+  // (body) program, which it holds by const reference (CM14 fused-while).
+  mutable std::mutex compile_mtx;
+  mutable std::map<int, CompiledEntry> compiled;
 
   Program() = default;
 

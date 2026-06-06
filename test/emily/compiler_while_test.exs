@@ -16,6 +16,15 @@ defmodule Emily.CompilerWhileTest do
 
   @native [compiler: Emily.Compiler, native: true, native_fallback: :raise]
   @eval [compiler: Emily.Compiler]
+  # CM14: the opt-in fused-while lane — the host-controlled decode loop with
+  # each loop *body* fused under `mx::compile`. The fusion reassociates f32,
+  # so this is all-close, not bit-identical (asserted with a tolerance below).
+  @native_compiled [
+    compiler: Emily.Compiler,
+    native: true,
+    native_fallback: :raise,
+    native_compiled: true
+  ]
 
   defp t(data), do: Nx.tensor(data, backend: Emily.Backend)
 
@@ -67,6 +76,65 @@ defmodule Emily.CompilerWhileTest do
       end
 
     buf
+  end
+
+  # A loop whose body runs a softmax over the last axis before folding it
+  # back into the state. The softmax's elementwise run (max/sub/exp/sum/div)
+  # is exactly what `mx::compile` fuses, so this exercises the fused-while
+  # body — and the reassociation that makes it all-close rather than exact.
+  defn loop_softmax(x) do
+    {_i, acc} =
+      while {i = 0, acc = x}, Nx.less(i, 8) do
+        m = Nx.reduce_max(acc, axes: [-1], keep_axes: true)
+        e = Nx.exp(Nx.subtract(acc, m))
+        w = Nx.divide(e, Nx.sum(e, axes: [-1], keep_axes: true))
+        {i + 1, Nx.add(acc, w)}
+      end
+
+    acc
+  end
+
+  describe "fused-while (native_compiled) == evaluator within f32 tol" do
+    test "loop body with a softmax run fuses and stays all-close" do
+      x = t([[1.0, 2.0, 3.0], [0.5, -1.0, 2.0]])
+
+      fused = Nx.Defn.jit(&loop_softmax/1, @native_compiled).(x)
+      eval = Nx.Defn.jit(&loop_softmax/1, @eval).(x)
+
+      assert %Emily.Backend{} = fused.data
+      assert fused.shape == eval.shape and fused.type == eval.type
+
+      # mx::compile reassociates the fused elementwise run, so the result
+      # matches the evaluator to within a few ULP rather than bit-for-bit.
+      drift =
+        Enum.zip(Nx.to_flat_list(fused), Nx.to_flat_list(eval))
+        |> Enum.reduce(0.0, fn {a, b}, acc -> max(acc, abs(a - b)) end)
+
+      assert drift <= 1.0e-5, "fused-while vs evaluator drift #{drift} exceeds 1.0e-5"
+    end
+
+    test "data-dependent trip count is honoured under fusion" do
+      # The fused body must not change the host-controlled loop's behaviour:
+      # the condition is still evaluated each step, so a varying trip count
+      # still tracks the input (same property as the plain native lane).
+      for data <- [[1.0, 1.0], [5.0, 5.0], [20.0, 20.0]] do
+        fused = Nx.Defn.jit(&count_until/1, @native_compiled).(t(data))
+        eval = Nx.Defn.jit(&count_until/1, @eval).(t(data))
+
+        drift =
+          Enum.zip(Nx.to_flat_list(fused), Nx.to_flat_list(eval))
+          |> Enum.reduce(0.0, fn {a, b}, acc -> max(acc, abs(a - b)) end)
+
+        assert drift <= 1.0e-4, "fused-while drift #{drift} exceeds tol for #{inspect(data)}"
+      end
+    end
+
+    test "zero iterations returns the initial state unchanged (fused lane)" do
+      x = t([3.0, 4.0])
+      out = Nx.Defn.jit(&zero_iter/1, @native_compiled).(x)
+      # No body ran, so nothing was fused — bit-identical to the input.
+      assert Nx.to_binary(out) == Nx.to_binary(x)
+    end
   end
 
   describe "defn while compiles native == evaluator" do

@@ -70,7 +70,14 @@ defmodule Emily.Program do
         * `:compiled` — wrap the replay in `mx::compile` (cached per
           stream) then `mx::eval`. The secondary encode win; opt-in (the
           single-NIF replay already delivers the main dispatch collapse).
-          Requires a shape-stable program (one input signature).
+          Requires a shape-stable program (one input signature). A program
+          carrying a top-level `defn while` (whose host loop `mx::compile`
+          can't trace) is instead replayed host-controlled with each loop
+          *body* fused under `mx::compile` and cached per stream — the body
+          is shape-stable, so the fused callable cache-hits across
+          iterations rather than recompiling per step. Either way the
+          fusion reassociates f32 to within a few ULP, so the result is
+          not bit-identical to `:sync`.
   """
   @spec eval(Native.worker(), t(), [Native.tensor()], keyword()) :: [Native.tensor()]
   def eval(worker, program, inputs, opts \\ []) do

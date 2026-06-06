@@ -30,6 +30,16 @@ defmodule Emily.Conformance.GenerationNativeTest do
 
   @native [compiler: Emily.Compiler, native: true, native_fallback: :raise]
   @eval [compiler: Emily.Compiler]
+  # CM14: the fused-while lane — same no-fallback native compile, but the
+  # decode loop's body is fused under `mx::compile`. The fusion reassociates
+  # f32, so logits are not bit-identical; greedy argmax over them is, so the
+  # acceptance gate is a token-id match rather than a binary-identical one.
+  @native_compiled [
+    compiler: Emily.Compiler,
+    native: true,
+    native_fallback: :raise,
+    native_compiled: true
+  ]
 
   # Run `model`'s generation through `build_generate` on a fixed in-vocab
   # prompt, returning the generated token ids.
@@ -66,5 +76,18 @@ defmodule Emily.Conformance.GenerationNativeTest do
     native = generate_ids(ctx.model_info, gc, @native)
     eval = generate_ids(ctx.model_info, gc, @eval)
     assert native == eval
+  end
+
+  test "greedy generation with the fused-while body matches the evaluator's token ids", ctx do
+    # The opt-in fused-while lane (CM14): the `defn while` decode loop runs
+    # host-controlled, but each per-token forward (the loop body) replays
+    # through a per-stream-cached `mx::compile`'d callable. `mx::compile`
+    # reassociates f32 so the logits drift by a few ULP — but greedy argmax
+    # is stable under that, so the generated token ids still match the
+    # evaluator exactly. (Not a binary-identical gate, by construction.)
+    gc = configure(ctx.gen_config, %{type: :greedy_search})
+    fused = generate_ids(ctx.model_info, gc, @native_compiled)
+    eval = generate_ids(ctx.model_info, gc, @eval)
+    assert fused == eval
   end
 end

@@ -64,6 +64,27 @@
   per-op BEAM↔worker round-trips to roughly one per token. Reproduce with
   `bench/qwen3_tokens_per_sec.exs` (baseline vs native lanes).
 
+- **Fused-while decode — `native_compiled: true`.** An opt-in lane that fuses
+  the `defn while` decode loop's body under `mlx::core::compile`. The outer
+  loop is data-dependent and host-controlled, so `mx::compile` can't trace it
+  as a whole — but the per-token forward (the loop *body*) is shape-stable
+  (`offset` is a runtime input), so each iteration replays through a
+  per-stream-cached compiled callable that fuses the elementwise runs the plain
+  replay leaves separate (RMSNorm, softmax, SiLU gating, residual adds). The
+  compiled body cache-hits across tokens rather than recompiling per step.
+  Enable it on top of the native generation path:
+
+      Nx.Defn.jit(&forward/1,
+        compiler: Emily.Compiler, native: true, native_compiled: true)
+
+  On Qwen3-0.6B this lifts greedy decode to **~5.4× the evaluator (~1.1× over
+  the plain native lane**, ~68 vs ~62 tok/s on an M-series Mac). The trade-off:
+  `mx::compile` reassociates f32, so logits drift by a few ULP and the output
+  is **not** bit-identical to the evaluator — greedy argmax is stable under
+  that, so the generated token ids still match exactly (the completions are
+  byte-identical). The `native-fused` lane in `bench/qwen3_tokens_per_sec.exs`
+  measures it; `generation_native_test.exs` gates the greedy token match.
+
 - **`defn while` compiles native.** Data-dependent loops — including
   `Bumblebee.Text.generation`'s decode loop — now lower to the single-NIF
   replay instead of falling back. The condition and body become nested
@@ -72,8 +93,9 @@
   continue, so the **whole loop is one NIF call** with no per-iteration
   BEAM↔worker round-trip. The `while` instruction is multi-output — its
   outputs are the final loop-carried state — and `:elem` projects them. (The
-  opt-in `mx::compile` eval mode degrades to a sync replay for while-containing
-  programs, which it can't trace.)
+  opt-in `mx::compile` eval mode can't trace the data-dependent host loop as a
+  whole, so it fuses each loop *body* instead — see the fused-while lane
+  below.)
 
 - **`Nx.Random` compiles native.** The PRNG surface (`split`, `uniform`,
   `normal`, `randint`, `gumbel`, `choice`) now lowers under the native

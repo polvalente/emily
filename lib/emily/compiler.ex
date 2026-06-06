@@ -81,6 +81,15 @@ defmodule Emily.Compiler do
       safe on any model. `:raise` re-raises the lowering error instead —
       use it in CI to prove a model lowers fully native. The per-call
       option wins over `config :emily, :native_fallback, :eval | :raise`.
+    * `:native_compiled` — `true` evals the compiled program in the
+      `mx::compile`'d mode instead of the plain replay. For a while-free
+      forward this fuses the elementwise runs the replay leaves separate
+      (the CM6 win); for a `Bumblebee.Text.generation` `defn while` it keeps
+      the decode loop host-controlled but fuses each loop **body** under
+      `mx::compile`, replaying the cached fused callable every token. Defaults
+      to `false`. Opt-in because the fusion reassociates f32 to within a few
+      ULP — greedy token ids still match the evaluator, but logits are not
+      bit-identical, so it only applies on top of `native: true`.
 
   Any other option is silently dropped. This matches how
   `Nx.Defn.Evaluator` and EXLA handle their own option lists, and is
@@ -120,7 +129,8 @@ defmodule Emily.Compiler do
     :batch_keys,
     :cache,
     :native,
-    :native_fallback
+    :native_fallback,
+    :native_compiled
   ]
 
   @impl true
@@ -185,9 +195,18 @@ defmodule Emily.Compiler do
     n_inputs = length(Composite.flatten_list(vars))
 
     case lower(Enum.reverse(leaves_rev), mode, key) do
-      {:ok, ir} -> {:ok, replay_closure(template, %{ir | n_inputs: n_inputs})}
+      {:ok, ir} -> {:ok, replay_closure(template, %{ir | n_inputs: n_inputs}, eval_mode(opts))}
       :fallback -> :fallback
     end
+  end
+
+  # The program eval mode: `:compiled` wraps the replay in `mx::compile`
+  # (fusing the elementwise runs — and, for a `defn while`, fusing each loop
+  # *body* under a host-controlled decode loop), `:sync` is the plain replay.
+  # `:compiled` is opt-in because the fusion reassociates f32 to within a few
+  # ULP rather than bit-for-bit; the default `:sync` stays bit-identical.
+  defp eval_mode(opts) do
+    if Keyword.get(opts, :native_compiled, false), do: :compiled, else: :sync
   end
 
   # Lower the output leaves to a flat IR. `Emily.IR.lower/1` is the *only*
@@ -214,7 +233,7 @@ defmodule Emily.Compiler do
   # The single-NIF compiled path (CM1+): compile the lowered IR into a
   # `Program` resource (captured in this closure) and replay the whole
   # graph in one NIF call per invocation.
-  defp replay_closure(template, ir) do
+  defp replay_closure(template, ir, eval_mode) do
     program = Program.compile(ir)
 
     fn [params] ->
@@ -223,7 +242,7 @@ defmodule Emily.Compiler do
       # Nx.Defn.Evaluator's `:parameter` handling); realize each to a
       # native ref. `{:input, i}` in the IR indexes this list.
       input_refs = Enum.map(params, fn p -> p.() |> Nx.to_tensor() |> native_ref() end)
-      out_refs = Program.eval(worker, program, input_refs)
+      out_refs = Program.eval(worker, program, input_refs, mode: eval_mode)
       [reassemble(template, out_refs)]
     end
   end
