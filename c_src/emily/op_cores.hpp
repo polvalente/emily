@@ -212,4 +212,129 @@ inline mx::array window_reduce_core(
   throw std::invalid_argument("window_reduce_core: unknown reduce kind");
 }
 
+// Select-and-scatter — the backward of window_max/window_min (Nx rewrites
+// grad(window_max) into window_scatter_max). `is_max` picks argmax vs
+// argmin. Tie-break: Nx's select_and_scatter uses `>=`/`<=` (LAST
+// occurrence); MLX argmax/argmin give FIRST, so we argmax `mask * pos`
+// to recover the last winner. Scatter variants take no dilations.
+inline mx::array window_scatter_core(
+    const mx::array &tensor,
+    const mx::array &source,
+    const mx::array &init_value,
+    const std::vector<int64_t> &window_shape,
+    const std::vector<int64_t> &strides,
+    const std::vector<int64_t> &pad_lo,
+    const std::vector<int64_t> &pad_hi,
+    bool is_max,
+    mx::Stream &s) {
+  int rank = static_cast<int>(window_shape.size());
+  auto original_shape = tensor.shape();
+
+  // 1. Pad input with init_value.
+  auto padded = do_pad(tensor, pad_lo, pad_hi, init_value, s);
+  auto padded_shape = padded.shape();
+
+  // 2. Sliding-window view (dilation is implicitly 1 per axis for scatter).
+  std::vector<int64_t> dilations(rank, 1);
+  std::vector<int64_t> out_dims;
+  auto view =
+      sliding_windows_view(padded, window_shape, strides, dilations, out_dims, s);
+
+  // 3. Flatten the kernel axes so a single reduction spans the window.
+  int64_t K = 1;
+  for (int i = 0; i < rank; ++i)
+    K *= window_shape[i];
+
+  mx::Shape flat_view_shape;
+  flat_view_shape.reserve(rank + 1);
+  for (int i = 0; i < rank; ++i)
+    flat_view_shape.push_back(static_cast<mx::ShapeElem>(out_dims[i]));
+  flat_view_shape.push_back(static_cast<mx::ShapeElem>(K));
+
+  auto flat_view = mx::reshape(view, flat_view_shape, s);
+  int last_axis = rank;
+
+  // 4. Argmax-with-tie-break (mask*pos picks the last-occurrence winner).
+  auto selector = is_max
+                      ? mx::max(flat_view, last_axis, /*keepdims=*/true, s)
+                      : mx::min(flat_view, last_axis, /*keepdims=*/true, s);
+  auto mask = mx::equal(flat_view, selector, s);
+
+  auto pos_1d = mx::arange(0.0, static_cast<double>(K), 1.0, mx::int32, s);
+  mx::Shape pos_shape(rank + 1, 1);
+  pos_shape[rank] = static_cast<mx::ShapeElem>(K);
+  auto pos = mx::reshape(pos_1d, pos_shape, s);
+
+  auto mask_i = mx::astype(mask, mx::int32, s);
+  auto mask_pos = mx::multiply(mask_i, pos, s);
+  auto last_arg = mx::argmax(mask_pos, last_axis, /*keepdims=*/false, s);
+
+  // 5. Decompose the flat kernel index into per-axis kernel indices.
+  std::vector<mx::array> k_idx;
+  k_idx.reserve(rank);
+  for (int i = 0; i < rank; ++i)
+    k_idx.push_back(last_arg); // placeholder; overwritten below
+
+  mx::array remaining = last_arg;
+  for (int i = rank - 1; i >= 0; --i) {
+    auto w_i = mx::array(static_cast<int32_t>(window_shape[i]), mx::int32);
+    k_idx[i] = mx::remainder(remaining, w_i, s);
+    if (i > 0) {
+      remaining = mx::floor_divide(remaining, w_i, s);
+    }
+  }
+
+  // 6. Per-axis absolute indices into the padded tensor.
+  mx::Shape out_shape_s;
+  out_shape_s.reserve(rank);
+  for (int i = 0; i < rank; ++i)
+    out_shape_s.push_back(static_cast<mx::ShapeElem>(out_dims[i]));
+
+  std::vector<mx::array> abs_indices;
+  abs_indices.reserve(rank);
+  for (int i = 0; i < rank; ++i) {
+    auto base_i =
+        mx::arange(0.0, static_cast<double>(out_dims[i]), 1.0, mx::int32, s);
+    mx::Shape bcast(rank, 1);
+    bcast[i] = static_cast<mx::ShapeElem>(out_dims[i]);
+    base_i = mx::reshape(base_i, bcast, s);
+    auto stride_i = mx::array(static_cast<int32_t>(strides[i]), mx::int32);
+    auto base_times = mx::multiply(base_i, stride_i, s);
+    auto bt = mx::broadcast_to(base_times, out_shape_s, s);
+    abs_indices.push_back(mx::add(bt, k_idx[i], s));
+  }
+
+  // 7. Reshape source so each index tuple is a single-point write.
+  mx::Shape source_reshape;
+  source_reshape.reserve(2 * rank);
+  for (int i = 0; i < rank; ++i)
+    source_reshape.push_back(static_cast<mx::ShapeElem>(out_dims[i]));
+  for (int i = 0; i < rank; ++i)
+    source_reshape.push_back(1);
+  auto source_r = mx::reshape(source, source_reshape, s);
+  source_r = mx::astype(source_r, tensor.dtype(), s);
+
+  // 8. Output buffer starts filled with init_value (unselected positions
+  //    retain it; selected positions receive init_value + sum(source)).
+  auto padded_out = mx::full(padded_shape, init_value, tensor.dtype(), s);
+
+  // 9. Scatter-add all selected contributions in one dispatch.
+  std::vector<int> axes(rank);
+  std::iota(axes.begin(), axes.end(), 0);
+  auto scattered = mx::scatter_add(padded_out, abs_indices, source_r, axes, s);
+
+  // 10. Slice back to the original (unpadded) shape.
+  mx::Shape slice_start, slice_stop, slice_strides_v;
+  slice_start.reserve(rank);
+  slice_stop.reserve(rank);
+  slice_strides_v.reserve(rank);
+  for (int i = 0; i < rank; ++i) {
+    slice_start.push_back(static_cast<mx::ShapeElem>(pad_lo[i]));
+    slice_stop.push_back(
+        static_cast<mx::ShapeElem>(pad_lo[i] + original_shape[i]));
+    slice_strides_v.push_back(1);
+  }
+  return mx::slice(scattered, slice_start, slice_stop, slice_strides_v, s);
+}
+
 } // namespace emily::ops

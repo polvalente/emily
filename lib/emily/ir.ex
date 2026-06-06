@@ -141,7 +141,11 @@ defmodule Emily.IR do
     window_sum: 82,
     window_max: 83,
     window_min: 84,
-    window_product: 85
+    window_product: 85,
+    # window select-and-scatter (pooling backward). operands
+    # [input, source, init]; iattrs [[window],[strides],[pad_lo],[pad_hi]].
+    window_scatter_max: 86,
+    window_scatter_min: 87
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -762,6 +766,37 @@ defmodule Emily.IR do
     {pad_lo, pad_hi} = window_padding(opts[:padding], rank)
 
     emit_coerced(state, op, [ra, init_ref], [window, strides, pad_lo, pad_hi, dilations], t.type)
+  end
+
+  # Window select-and-scatter (window_scatter_max/min) — the MaxPool/MinPool
+  # backward. Mirrors Emily.Backend.apply_window_scatter/7: operands
+  # [input, source, init]; iattrs [[window],[strides],[pad_lo],[pad_hi]]
+  # (no dilations). The init scalar comes from the Expr (Nx's grad rule),
+  # coerced to the output dtype.
+  defp lower_op(
+         %T{data: %Nx.Defn.Expr{op: op, args: [tin, source, init, window_dimensions, opts]}} = t,
+         state
+       )
+       when op in [:window_scatter_max, :window_scatter_min] do
+    {rt, state} = lower_node(tin, state)
+    {rs, state} = lower_node(source, state)
+    {ri, state} = lower_node(init, state)
+    {ri, state} = emit(state, :astype, [ri], [[dtype_code(t.type)]])
+
+    rank = tuple_size(tin.shape)
+    window = Tuple.to_list(window_dimensions)
+    strides = window_per_axis(opts[:strides], rank, 1)
+    {pad_lo, pad_hi} = window_padding(opts[:padding], rank)
+
+    emit_coerced(state, op, [rt, rs, ri], [window, strides, pad_lo, pad_hi], t.type)
+  end
+
+  # Nx.reverse along one or more axes (the conv backward flips the kernel).
+  # Reversing is order-independent across axes, so chain a single-axis
+  # `flip` (mx negative-stride slice) per axis. Empty axes => identity.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :reverse, args: [a, axes]}}, state) do
+    {ra, state} = lower_node(a, state)
+    Enum.reduce(axes, {ra, state}, fn axis, {r, st} -> emit(st, :flip, [r], [[axis]]) end)
   end
 
   # cond: raw args [clauses, last], clauses = [{pred, body}, ...]. Lower to

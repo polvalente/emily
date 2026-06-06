@@ -163,9 +163,14 @@ enum class Opcode : int64_t {
   WindowMax = 83,
   WindowMin = 84,
   WindowProduct = 85,
+  // Window select-and-scatter (MaxPool/MinPool backward).
+  // operands [input, source, init_scalar]; iattrs
+  // [[window...],[strides...],[pad_lo...],[pad_hi...]] (no dilations)
+  WindowScatterMax = 86,
+  WindowScatterMin = 87,
 };
 
-inline constexpr int64_t kOpcodeCount = 86;
+inline constexpr int64_t kOpcodeCount = 88;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -539,6 +544,20 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
         in[0], attr_at(iattrs, 0, "window"), attr_at(iattrs, 1, "window"),
         attr_at(iattrs, 2, "window"), attr_at(iattrs, 3, "window"),
         attr_at(iattrs, 4, "window"), in[1], kind, s);
+  }
+  case Opcode::WindowScatterMax:
+  case Opcode::WindowScatterMin: {
+    if (in.size() != 3) {
+      throw std::invalid_argument(
+          "window scatter expects 3 operands (input, source, init), got " +
+          std::to_string(in.size()));
+    }
+    bool is_max = op == Opcode::WindowScatterMax;
+    return emily::ops::window_scatter_core(
+        in[0], in[1], in[2], attr_at(iattrs, 0, "window_scatter"),
+        attr_at(iattrs, 1, "window_scatter"),
+        attr_at(iattrs, 2, "window_scatter"),
+        attr_at(iattrs, 3, "window_scatter"), is_max, s);
   }
   case Opcode::Concatenate: {
     if (in.empty()) {
