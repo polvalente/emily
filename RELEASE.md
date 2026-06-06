@@ -58,6 +58,18 @@
   gather, so a DistilBERT question-answering `Nx.Serving` forward now runs
   fully native — and fused — under `native_fallback: :raise`.
 
+- **Window (pooling) ops lower natively — forward and backward.** The
+  forward window family (`window_sum`/`window_max`/`window_min`/
+  `window_product`, i.e. average and max pooling), the select-and-scatter
+  backward (`window_scatter_max`/`window_scatter_min`, the MaxPool/MinPool
+  gradient), and `reverse` (the conv-backward kernel flip) all now compile
+  under the native single-NIF path instead of falling back. The pad →
+  sliding-window → reduce/scatter cores moved into `emily/op_cores.hpp` so
+  the eager NIFs and the compiled replay share one implementation. A
+  small-CNN **training step** (conv + maxpool forward and backward, grad,
+  SGD) now lowers fully native under `native_fallback: :raise`, producing a
+  loss bit-identical to the evaluator.
+
 - **`Bumblebee.Text.generation` compiles fully native — greedy and sampling.**
   The headline result: an end-to-end Bumblebee generation (the transformer
   forward, the `defn while` decode loop, dynamic KV-cache writes, `cumsum`
@@ -145,3 +157,15 @@
   tensor-offset `fast_rope/8`. Note: feed the kernel the 4-D
   `{batch, heads, seq, head_dim}` layout — in 3-D, MLX 0.31 mis-rotates
   single-token (`seq == 1`) inputs.
+
+### Fixed
+
+- **Dilated window reductions (`window_dilations > 1`) returned wrong values.**
+  `window_sum`/`window_max`/`window_min`/`window_product` with a dilated kernel
+  silently produced garbage for windows past the first stride positions, on both
+  the eager backend and the native compiler (they share the window-reduce core).
+  A dilated kernel axis gets an `as_strided` stride > 1, so the sliding-window
+  view aliases fewer physical elements than its logical size; MLX's strided-reduce
+  fast path then read past the aliased buffer. The view is now materialised
+  contiguously before the reduce when any dilation > 1 (the common non-dilated
+  pooling path is unchanged and stays copy-free).

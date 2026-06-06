@@ -135,7 +135,17 @@ defmodule Emily.IR do
     stack: 80,
     # take_along_axis: gather along one axis with a same-rank s32 index
     # tensor. operands [input, indices]; iattrs [[axis]].
-    take_along_axis: 81
+    take_along_axis: 81,
+    # window (pooling) reductions. operands [input, init_scalar]; iattrs
+    # [[window],[strides],[pad_lo],[pad_hi],[dilations]].
+    window_sum: 82,
+    window_max: 83,
+    window_min: 84,
+    window_product: 85,
+    # window select-and-scatter (pooling backward). operands
+    # [input, source, init]; iattrs [[window],[strides],[pad_lo],[pad_hi]].
+    window_scatter_max: 86,
+    window_scatter_min: 87
   }
 
   # Quant mode string -> code; decoded by qmode_from_code in
@@ -738,6 +748,57 @@ defmodule Emily.IR do
     coerce(r, type, state)
   end
 
+  # Window (pooling) reductions (window_sum/max/min/product). Mirrors
+  # Emily.Backend.apply_window_reduce/6: pad with the dtype identity, build
+  # the sliding-window view, reduce over the kernel axes. The init scalar
+  # is baked as a const operand so float ±inf and integer min/max are all
+  # handled exactly as the eager `identity_ref`. Operands [input, init];
+  # iattrs [[window],[strides],[pad_lo],[pad_hi],[dilations]].
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: op, args: [a, window_dimensions, opts]}} = t, state)
+       when op in [:window_sum, :window_max, :window_min, :window_product] do
+    {ra, state} = lower_node(a, state)
+    {init_ref, state} = window_identity(op, a.type, state)
+
+    rank = tuple_size(a.shape)
+    window = Tuple.to_list(window_dimensions)
+    strides = window_per_axis(opts[:strides], rank, 1)
+    dilations = window_per_axis(opts[:window_dilations], rank, 1)
+    {pad_lo, pad_hi} = window_padding(opts[:padding], rank)
+
+    emit_coerced(state, op, [ra, init_ref], [window, strides, pad_lo, pad_hi, dilations], t.type)
+  end
+
+  # Window select-and-scatter (window_scatter_max/min) — the MaxPool/MinPool
+  # backward. Mirrors Emily.Backend.apply_window_scatter/7: operands
+  # [input, source, init]; iattrs [[window],[strides],[pad_lo],[pad_hi]]
+  # (no dilations). The init scalar comes from the Expr (Nx's grad rule),
+  # coerced to the output dtype.
+  defp lower_op(
+         %T{data: %Nx.Defn.Expr{op: op, args: [tin, source, init, window_dimensions, opts]}} = t,
+         state
+       )
+       when op in [:window_scatter_max, :window_scatter_min] do
+    {rt, state} = lower_node(tin, state)
+    {rs, state} = lower_node(source, state)
+    {ri, state} = lower_node(init, state)
+    {ri, state} = emit(state, :astype, [ri], [[dtype_code(t.type)]])
+
+    rank = tuple_size(tin.shape)
+    window = Tuple.to_list(window_dimensions)
+    strides = window_per_axis(opts[:strides], rank, 1)
+    {pad_lo, pad_hi} = window_padding(opts[:padding], rank)
+
+    emit_coerced(state, op, [rt, rs, ri], [window, strides, pad_lo, pad_hi], t.type)
+  end
+
+  # Nx.reverse along one or more axes (the conv backward flips the kernel).
+  # Reversing is order-independent across axes, so chain a single-axis
+  # `flip` (mx negative-stride slice) per axis. Empty axes => identity.
+  defp lower_op(%T{data: %Nx.Defn.Expr{op: :reverse, args: [a, axes]}}, state) do
+    {ra, state} = lower_node(a, state)
+    Enum.reduce(axes, {ra, state}, fn axis, {r, st} -> emit(st, :flip, [r], [[axis]]) end)
+  end
+
   # cond: raw args [clauses, last], clauses = [{pred, body}, ...]. Lower to
   # a select chain `where(p1, b1, where(p2, b2, ... last))`. ALL branches
   # are evaluated (Nx branches are side-effect-free and shape-compatible);
@@ -1049,6 +1110,49 @@ defmodule Emily.IR do
   # holds materialized literal constants (and iota); `:capture` holds
   # embedded `:tensor` weights. Both go through from_binary once at
   # lower time and are never re-shipped.
+  # Bake the dtype identity for a window reduce as a scalar const operand
+  # (mirrors Emily.Backend.identity_ref/2): 0 for sum, 1 for product,
+  # ±inf for float max/min, dtype min/max for integer max/min.
+  defp window_identity(op, type, state) do
+    materialize_const(window_identity_scalar(op, type), {}, type, state)
+  end
+
+  defp window_identity_scalar(:window_sum, type),
+    do: Nx.tensor(0, type: type, backend: Nx.BinaryBackend)
+
+  defp window_identity_scalar(:window_product, type),
+    do: Nx.tensor(1, type: type, backend: Nx.BinaryBackend)
+
+  defp window_identity_scalar(:window_max, {kind, _} = type) when kind in [:f, :bf],
+    do: Nx.tensor(:neg_infinity, type: type, backend: Nx.BinaryBackend)
+
+  defp window_identity_scalar(:window_min, {kind, _} = type) when kind in [:f, :bf],
+    do: Nx.tensor(:infinity, type: type, backend: Nx.BinaryBackend)
+
+  defp window_identity_scalar(:window_max, {kind, bits} = type) when kind in [:s, :u] do
+    value = if kind == :u, do: 0, else: -Bitwise.bsl(1, bits - 1)
+    Nx.tensor(value, type: type, backend: Nx.BinaryBackend)
+  end
+
+  defp window_identity_scalar(:window_min, {kind, bits} = type) when kind in [:s, :u] do
+    value = if kind == :u, do: Bitwise.bsl(1, bits) - 1, else: Bitwise.bsl(1, bits - 1) - 1
+    Nx.tensor(value, type: type, backend: Nx.BinaryBackend)
+  end
+
+  # Per-axis strides / dilations (mirror Emily.Backend.normalize_per_axis/3).
+  defp window_per_axis(nil, rank, default), do: List.duplicate(default, rank)
+  defp window_per_axis(n, rank, _default) when is_integer(n), do: List.duplicate(n, rank)
+  defp window_per_axis(list, _rank, _default) when is_list(list), do: list
+
+  # Split resolved `[{lo, hi}, ...]` padding into two lists (mirror
+  # Emily.Backend.split_padding/2).
+  defp window_padding(pairs, _rank) when is_list(pairs) do
+    pairs |> Enum.map(fn {lo, hi} -> {lo, hi} end) |> Enum.unzip()
+  end
+
+  defp window_padding(_other, rank),
+    do: {List.duplicate(0, rank), List.duplicate(0, rank)}
+
   defp materialize_const(tensor, shape, type, state) do
     ref = Emily.Native.from_binary(Nx.to_binary(tensor), Tuple.to_list(shape), type)
     idx = state.n_consts

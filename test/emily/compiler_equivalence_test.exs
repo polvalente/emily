@@ -140,6 +140,13 @@ defmodule Emily.CompilerEquivalenceTest do
       x = et([1.0, 2.0, 3.0])
       assert_equiv(fn t -> Nx.broadcast(t, {2, 3}) end, [x])
     end
+
+    test "reverse along one and multiple axes matches" do
+      x = et([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+      assert_equiv(fn t -> Nx.reverse(t, axes: [1]) end, [x])
+      assert_equiv(fn t -> Nx.reverse(t, axes: [0, 1]) end, [x])
+      assert_equiv(fn t -> Nx.reverse(t) end, [x])
+    end
   end
 
   describe "dot / matmul" do
@@ -385,6 +392,87 @@ defmodule Emily.CompilerEquivalenceTest do
       x = Nx.iota({1, 2, 4}, type: :f32, backend: Emily.Backend) |> Nx.divide(8.0)
       idx = Nx.tensor([[[3, 1], [0, 2]]], type: :s32, backend: Emily.Backend)
       assert_equiv(fn t, i -> Nx.take_along_axis(t, i, axis: 2) end, [x, idx])
+    end
+  end
+
+  describe "window reductions (pooling forward)" do
+    test "2x2 maxpool / sumpool / minpool (CNN-shaped) match the Evaluator" do
+      # {batch, channels, h, w}; pool only the spatial axes, stride 2.
+      x = Nx.iota({1, 2, 4, 4}, type: :f32, backend: Emily.Backend) |> Nx.divide(16.0)
+
+      assert_equiv(fn t -> Nx.window_max(t, {1, 1, 2, 2}, strides: [1, 1, 2, 2]) end, [x])
+      assert_equiv(fn t -> Nx.window_sum(t, {1, 1, 2, 2}, strides: [1, 1, 2, 2]) end, [x])
+      assert_equiv(fn t -> Nx.window_min(t, {1, 1, 2, 2}, strides: [1, 1, 2, 2]) end, [x])
+    end
+
+    test "maxpool with padding (boundary identity) matches" do
+      x = Nx.iota({1, 1, 5, 5}, type: :f32, backend: Emily.Backend) |> Nx.divide(25.0)
+
+      assert_equiv(
+        fn t ->
+          Nx.window_max(t, {1, 1, 3, 3},
+            strides: [1, 1, 2, 2],
+            padding: [{0, 0}, {0, 0}, {1, 1}, {1, 1}]
+          )
+        end,
+        [x]
+      )
+    end
+
+    test "window_product matches" do
+      x =
+        Nx.iota({1, 8}, type: :f32, backend: Emily.Backend) |> Nx.divide(8.0) |> Nx.add(1.0)
+
+      assert_equiv(fn t -> Nx.window_product(t, {1, 2}, strides: [1, 1]) end, [x])
+    end
+
+    test "dilated windows match (issue #175)" do
+      # Tiny input + dilation 2 on the inner axis: the sliding-window view
+      # over-reads its aliased buffer unless materialised before the reduce.
+      # Pre-fix the native path returned garbage here while the Evaluator
+      # returned a deterministic 0.0, so the two diverged.
+      x =
+        Nx.iota({1, 8}, type: :f32, backend: Emily.Backend) |> Nx.divide(8.0) |> Nx.add(1.0)
+
+      assert_equiv(fn t -> Nx.window_max(t, {1, 3}, window_dilations: [1, 2]) end, [x])
+      assert_equiv(fn t -> Nx.window_sum(t, {1, 3}, window_dilations: [1, 2]) end, [x])
+      assert_equiv(fn t -> Nx.window_min(t, {1, 3}, window_dilations: [1, 2]) end, [x])
+    end
+  end
+
+  describe "window scatter (pooling backward)" do
+    # The MaxPool/MinPool backward: scatter the upstream gradient `source`
+    # (one per pooled window) into the argmax/argmin position of each window.
+    test "window_scatter_max / window_scatter_min match the Evaluator" do
+      t = Nx.iota({1, 1, 4, 4}, type: :f32, backend: Emily.Backend) |> Nx.divide(16.0)
+      source = Nx.iota({1, 1, 2, 2}, type: :f32, backend: Emily.Backend) |> Nx.add(1.0)
+
+      assert_equiv(
+        fn t, src ->
+          Nx.window_scatter_max(t, src, 0.0, {1, 1, 2, 2}, strides: [1, 1, 2, 2])
+        end,
+        [t, source]
+      )
+
+      assert_equiv(
+        fn t, src ->
+          Nx.window_scatter_min(t, src, 0.0, {1, 1, 2, 2}, strides: [1, 1, 2, 2])
+        end,
+        [t, source]
+      )
+    end
+
+    test "grad(window_max) lowers (the maxpool backward path) and matches" do
+      x = Nx.iota({1, 1, 4, 4}, type: :f32, backend: Emily.Backend) |> Nx.divide(16.0)
+
+      assert_equiv(
+        fn t ->
+          Nx.Defn.grad(t, fn t ->
+            t |> Nx.window_max({1, 1, 2, 2}, strides: [1, 1, 2, 2]) |> Nx.sum()
+          end)
+        end,
+        [x]
+      )
     end
   end
 
