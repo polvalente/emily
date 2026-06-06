@@ -17,7 +17,7 @@ Mix.install(
 
 ## Overview
 
-The other notebooks in this repo run pretrained models forward. This
+The other livebooks in this repo run pretrained models forward. This
 one trains from scratch — a small Axon MLP on MNIST, lowered through
 `Emily.Compiler` so every step of the backward pass dispatches to
 MLX. It's the end-to-end exercise of the `Nx.Defn.grad` chain that
