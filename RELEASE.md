@@ -68,7 +68,11 @@
   the eager NIFs and the compiled replay share one implementation. A
   small-CNN **training step** (conv + maxpool forward and backward, grad,
   SGD) now lowers fully native under `native_fallback: :raise`, producing a
-  loss bit-identical to the evaluator.
+  loss bit-identical to the evaluator. Native training is now
+  **convergence**-tested, not just verified-lowering: a CNN (30 SGD steps)
+  and an MLP (50 steps) run their full step through the single-NIF path and
+  match the op-by-op evaluator bit-for-bit and a `BinaryBackend` oracle to
+  f32 tolerance across the whole loss trajectory.
 
 - **`Bumblebee.Text.generation` compiles fully native — greedy and sampling.**
   The headline result: an end-to-end Bumblebee generation (the transformer
