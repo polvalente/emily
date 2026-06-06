@@ -15,6 +15,7 @@
 // back to the unpadded shape.
 
 #include "../emily/async.hpp"
+#include "../emily/op_cores.hpp"
 #include "../emily/tensor.hpp"
 #include "../emily/worker.hpp"
 
@@ -36,130 +37,19 @@ using emily::WorkerThread;
 
 namespace {
 
-// -------------------- Shared helpers --------------------
-
-// Contiguous element-strides for a shape, e.g. {B, H, W, C} ->
-// {H*W*C, W*C, C, 1}.
-mx::Strides contiguous_strides(const mx::Shape &shape) {
-  int rank = static_cast<int>(shape.size());
-  mx::Strides out(rank, 1);
-  for (int i = rank - 2; i >= 0; --i) {
-    out[i] = out[i + 1] * static_cast<int64_t>(shape[i + 1]);
-  }
-  return out;
-}
-
-// Pad `a` with `pad_value` using per-axis lo/hi pads. Returns `a`
-// unchanged if all pads are zero (the common path — avoids a pointless
-// copy).
-mx::array do_pad(
-    const mx::array &a,
-    const std::vector<int64_t> &pad_lo,
-    const std::vector<int64_t> &pad_hi,
-    const mx::array &pad_value,
-    mx::Stream &s) {
-  int rank = static_cast<int>(a.ndim());
-  // A direct Native call can pass pad vectors shorter than the tensor
-  // rank; the per-axis loops below would then read out of bounds.
-  if (pad_lo.size() != static_cast<std::size_t>(rank) ||
-      pad_hi.size() != static_cast<std::size_t>(rank)) {
-    throw std::invalid_argument(
-        "pad: pad_lo/pad_hi length must equal tensor rank " +
-        std::to_string(rank));
-  }
-  bool any_pad = false;
-  for (int i = 0; i < rank; ++i) {
-    if (pad_lo[i] > 0 || pad_hi[i] > 0) {
-      any_pad = true;
-      break;
-    }
-  }
-  if (!any_pad) {
-    return a;
-  }
-
-  std::vector<int> axes(rank);
-  std::iota(axes.begin(), axes.end(), 0);
-
-  mx::Shape lo, hi;
-  lo.reserve(rank);
-  hi.reserve(rank);
-  for (int i = 0; i < rank; ++i) {
-    lo.push_back(static_cast<mx::ShapeElem>(pad_lo[i]));
-    hi.push_back(static_cast<mx::ShapeElem>(pad_hi[i]));
-  }
-
-  return mx::pad(a, axes, lo, hi, pad_value, "constant", s);
-}
-
-// Build an `as_strided` view with shape `[out_dims..., window_shape...]`.
-// Output `out_dims` is filled with the per-axis output size.
-//
-// Output shape formula (per axis):
-//   eff_window = (window_shape[i] - 1) * dilations[i] + 1
-//   out[i]     = (padded_shape[i] - eff_window) / strides[i] + 1
-//
-// Strides (in elements, relative to the padded tensor's contiguous
-// layout — `as_strided` forces its input to be contiguous internally):
-//   out-axis  i: contiguous_stride[i] * strides[i]
-//   kernel-ax i: contiguous_stride[i] * dilations[i]
-mx::array sliding_windows_view(
-    const mx::array &padded,
-    const std::vector<int64_t> &window_shape,
-    const std::vector<int64_t> &strides,
-    const std::vector<int64_t> &dilations,
-    std::vector<int64_t> &out_dims,
-    mx::Stream &s) {
-  int rank = static_cast<int>(padded.ndim());
-  // A direct Native call can pass window/stride/dilation vectors that
-  // don't match the tensor rank (out-of-bounds indexing below) or a zero
-  // stride (the `/ strides[i]` out-shape divide is an integer SIGFPE that
-  // bypasses the async catch ladder and crashes the BEAM).
-  const auto rank_sz = static_cast<std::size_t>(rank);
-  if (window_shape.size() != rank_sz || strides.size() != rank_sz ||
-      dilations.size() != rank_sz) {
-    throw std::invalid_argument(
-        "window: window_shape/strides/dilations length must equal tensor "
-        "rank " +
-        std::to_string(rank));
-  }
-  for (int i = 0; i < rank; ++i) {
-    if (window_shape[i] < 1 || strides[i] < 1 || dilations[i] < 1) {
-      throw std::invalid_argument(
-          "window: window dimensions, strides, and dilations must all be "
-          "positive");
-    }
-  }
-  const auto &padded_shape = padded.shape();
-  auto cs = contiguous_strides(padded_shape);
-
-  out_dims.assign(rank, 0);
-  mx::Shape new_shape;
-  mx::Strides new_strides;
-  new_shape.reserve(2 * rank);
-  new_strides.reserve(2 * rank);
-
-  for (int i = 0; i < rank; ++i) {
-    int64_t eff = (window_shape[i] - 1) * dilations[i] + 1;
-    out_dims[i] = (static_cast<int64_t>(padded_shape[i]) - eff) / strides[i] + 1;
-    new_shape.push_back(static_cast<mx::ShapeElem>(out_dims[i]));
-  }
-  for (int i = 0; i < rank; ++i) {
-    new_shape.push_back(static_cast<mx::ShapeElem>(window_shape[i]));
-  }
-  for (int i = 0; i < rank; ++i) {
-    new_strides.push_back(cs[i] * strides[i]);
-  }
-  for (int i = 0; i < rank; ++i) {
-    new_strides.push_back(cs[i] * dilations[i]);
-  }
-
-  return mx::as_strided(padded, new_shape, new_strides, 0, s);
-}
+// The window cores (do_pad / sliding_windows_view / window_reduce_core)
+// live in emily/op_cores.hpp so the eager NIFs below and the Expr-compiler
+// program replay (c_src/program.cpp) share one implementation and can't
+// numerically drift. window_scatter_impl below still composes do_pad +
+// sliding_windows_view from there.
+using emily::ops::do_pad;
+using emily::ops::sliding_windows_view;
+using emily::ops::window_reduce_core;
+using emily::ops::WindowReduceKind;
 
 // -------------------- Reductions --------------------
 
-#define EMILY_WINDOW_REDUCE(op_name, mlx_fn)                                   \
+#define EMILY_WINDOW_REDUCE(op_name, kind)                                    \
   fine::Term op_name##_nif(                                                    \
       ErlNifEnv *env,                                                          \
       fine::ResourcePtr<WorkerThread> w,                                       \
@@ -175,23 +65,17 @@ mx::array sliding_windows_view(
          strides = std::move(strides), pad_lo = std::move(pad_lo),             \
          pad_hi = std::move(pad_hi), dilations = std::move(dilations),         \
          init_value = std::move(init_value)](mx::Stream &s) {                  \
-          auto padded = do_pad(t->array, pad_lo, pad_hi, init_value->array, s);\
-          std::vector<int64_t> out_dims;                                       \
-          auto view = sliding_windows_view(padded, window_shape, strides,      \
-                                           dilations, out_dims, s);            \
-          int rank = static_cast<int>(window_shape.size());                    \
-          std::vector<int> reduce_axes(rank);                                  \
-          for (int i = 0; i < rank; ++i)                                       \
-            reduce_axes[i] = rank + i;                                         \
-          return wrap(mlx_fn(view, reduce_axes, /*keepdims=*/false, s));       \
+          return wrap(window_reduce_core(                                      \
+              t->array, window_shape, strides, pad_lo, pad_hi, dilations,      \
+              init_value->array, kind, s));                                    \
         });                                                                    \
   }                                                                            \
   FINE_NIF(op_name##_nif, 0);
 
-EMILY_WINDOW_REDUCE(window_sum,     mx::sum)
-EMILY_WINDOW_REDUCE(window_max,     mx::max)
-EMILY_WINDOW_REDUCE(window_min,     mx::min)
-EMILY_WINDOW_REDUCE(window_product, mx::prod)
+EMILY_WINDOW_REDUCE(window_sum,     WindowReduceKind::Sum)
+EMILY_WINDOW_REDUCE(window_max,     WindowReduceKind::Max)
+EMILY_WINDOW_REDUCE(window_min,     WindowReduceKind::Min)
+EMILY_WINDOW_REDUCE(window_product, WindowReduceKind::Product)
 
 #undef EMILY_WINDOW_REDUCE
 

@@ -388,6 +388,38 @@ defmodule Emily.CompilerEquivalenceTest do
     end
   end
 
+  describe "window reductions (pooling forward)" do
+    test "2x2 maxpool / sumpool / minpool (CNN-shaped) match the Evaluator" do
+      # {batch, channels, h, w}; pool only the spatial axes, stride 2.
+      x = Nx.iota({1, 2, 4, 4}, type: :f32, backend: Emily.Backend) |> Nx.divide(16.0)
+
+      assert_equiv(fn t -> Nx.window_max(t, {1, 1, 2, 2}, strides: [1, 1, 2, 2]) end, [x])
+      assert_equiv(fn t -> Nx.window_sum(t, {1, 1, 2, 2}, strides: [1, 1, 2, 2]) end, [x])
+      assert_equiv(fn t -> Nx.window_min(t, {1, 1, 2, 2}, strides: [1, 1, 2, 2]) end, [x])
+    end
+
+    test "maxpool with padding (boundary identity) matches" do
+      x = Nx.iota({1, 1, 5, 5}, type: :f32, backend: Emily.Backend) |> Nx.divide(25.0)
+
+      assert_equiv(
+        fn t ->
+          Nx.window_max(t, {1, 1, 3, 3},
+            strides: [1, 1, 2, 2],
+            padding: [{0, 0}, {0, 0}, {1, 1}, {1, 1}]
+          )
+        end,
+        [x]
+      )
+    end
+
+    test "window_product matches" do
+      x =
+        Nx.iota({1, 8}, type: :f32, backend: Emily.Backend) |> Nx.divide(8.0) |> Nx.add(1.0)
+
+      assert_equiv(fn t -> Nx.window_product(t, {1, 2}, strides: [1, 1]) end, [x])
+    end
+  end
+
   describe "dynamic put_slice (KV-cache write)" do
     test "put_slice at a runtime offset matches the Evaluator" do
       # {batch, n_kv_heads, max_len, head_dim} KV buffer; write one token.

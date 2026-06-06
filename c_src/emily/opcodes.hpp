@@ -156,9 +156,16 @@ enum class Opcode : int64_t {
   // Gather along one axis with a same-rank s32 index tensor.
   // operands [input, indices]; iattrs [[axis]]
   TakeAlongAxis = 81,
+  // Window (pooling) reductions: pad -> sliding-window view -> reduce.
+  // operands [input, init_scalar]; iattrs
+  // [[window...],[strides...],[pad_lo...],[pad_hi...],[dilations...]]
+  WindowSum = 82,
+  WindowMax = 83,
+  WindowMin = 84,
+  WindowProduct = 85,
 };
 
-inline constexpr int64_t kOpcodeCount = 82;
+inline constexpr int64_t kOpcodeCount = 86;
 
 // Quant mode code (Emily.IR @quant_modes) -> MLX mode string.
 inline std::string qmode_from_code(int64_t code) {
@@ -514,6 +521,24 @@ inline mx::array dispatch_op(Opcode op, const std::vector<mx::array> &in,
     int axis =
         emily::checked_int(scalar_at(iattrs, 0, "take_along_axis"), "axis");
     return mx::take_along_axis(in[0], in[1], axis, s);
+  }
+  case Opcode::WindowSum:
+  case Opcode::WindowMax:
+  case Opcode::WindowMin:
+  case Opcode::WindowProduct: {
+    if (in.size() != 2) {
+      throw std::invalid_argument(
+          "window reduce expects 2 operands (input, init), got " +
+          std::to_string(in.size()));
+    }
+    auto kind = op == Opcode::WindowSum    ? emily::ops::WindowReduceKind::Sum
+                : op == Opcode::WindowMax  ? emily::ops::WindowReduceKind::Max
+                : op == Opcode::WindowMin  ? emily::ops::WindowReduceKind::Min
+                                           : emily::ops::WindowReduceKind::Product;
+    return emily::ops::window_reduce_core(
+        in[0], attr_at(iattrs, 0, "window"), attr_at(iattrs, 1, "window"),
+        attr_at(iattrs, 2, "window"), attr_at(iattrs, 3, "window"),
+        attr_at(iattrs, 4, "window"), in[1], kind, s);
   }
   case Opcode::Concatenate: {
     if (in.empty()) {

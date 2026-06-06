@@ -58,6 +58,15 @@
   gather, so a DistilBERT question-answering `Nx.Serving` forward now runs
   fully native — and fused — under `native_fallback: :raise`.
 
+- **Window (pooling) reductions lower natively** — the forward window family
+  (`window_sum`/`window_max`/`window_min`/`window_product`, i.e. average and
+  max pooling) now compiles under the native single-NIF path instead of
+  falling back. The pad → sliding-window → reduce cores moved into
+  `emily/op_cores.hpp` so the eager NIFs and the compiled replay share one
+  implementation. A small-CNN forward (conv + maxpool) now lowers fully
+  native under `native_fallback: :raise`. The maxpool *backward*
+  (`window_scatter_max`, on the CNN training path) is still pending.
+
 - **`Bumblebee.Text.generation` compiles fully native — greedy and sampling.**
   The headline result: an end-to-end Bumblebee generation (the transformer
   forward, the `defn while` decode loop, dynamic KV-cache writes, `cumsum`
