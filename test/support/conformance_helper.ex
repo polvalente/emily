@@ -29,11 +29,92 @@ defmodule Emily.ConformanceHelper do
 
   defmacro __using__(_opts) do
     quote do
-      import Emily.ConformanceHelper, only: [assert_all_close: 2, assert_all_close: 3]
+      import Emily.ConformanceHelper,
+        only: [assert_all_close: 2, assert_all_close: 3, mode_test: 2]
 
       setup do
         Nx.default_backend(Emily.Backend)
         :ok
+      end
+    end
+  end
+
+  @doc """
+  Define a conformance test in three lanes from a single body.
+
+  Expands to three `ExUnit` tests that share `body` but bind a different
+  `predict_opts` keyword list:
+
+    * the default lane binds `predict_opts` to `[]` — the evaluator path
+      Bumblebee/Axon use out of the box (the existing "eval'd" mode);
+    * the native lane binds `predict_opts` to
+      `[compiler: Emily.Compiler, native: true, native_fallback: :raise]`
+      and is additionally tagged `:native`;
+    * the fusion lane adds `native_compiled: true` (wrapping the replay in
+      `mx::compile`) and is additionally tagged `:native_compiled`.
+
+  The module is already tagged `:conformance`, so the native and fusion
+  lanes carry that tag too: `mix test --only conformance` runs all three,
+  while `mix test --only native` / `mix test --only native_compiled` run
+  one lane each. Because every lane resolves the same HuggingFace repos,
+  whichever runs first reads from `~/.cache/bumblebee` for the rest — the
+  download is paid once.
+
+  `mx::compile` reassociates f32, so the fusion lane's logits are not
+  bit-identical to the evaluator's; it shares the same reference and
+  tolerance as the other lanes (these tiny-random forwards drift well
+  within `assert_all_close`'s default), and `assert_finite!`-style smoke
+  tests are robust to the drift outright.
+
+  The body must thread `predict_opts` into whatever drives the forward
+  pass so the two lanes assert against the *identical* reference and
+  cannot drift apart in maintenance:
+
+      mode_test ":base" do
+        {:ok, %{model: model, params: params}} = Bumblebee.load_model(...)
+        outputs = Axon.predict(model, params, inputs, predict_opts)
+        assert_all_close(outputs.hidden_state, ...)
+      end
+
+  For `Axon.build`-driven tests, build `init_fn` on the evaluator (params
+  are random-init, mode-irrelevant) and only `predict_fn` under
+  `predict_opts`, so the native lane gates the forward pass alone:
+
+      {init_fn, _} = Axon.build(model)
+      {_, predict_fn} = Axon.build(model, predict_opts)
+
+  `native_fallback: :raise` makes the native lane a no-fallback gate: an
+  op that does not lower fails the test rather than silently degrading to
+  the evaluator, so a red native lane is a concrete op-coverage gap.
+  """
+  defmacro mode_test(name, do: body) do
+    quote do
+      test unquote(name) do
+        var!(predict_opts) = []
+        unquote(body)
+      end
+
+      @tag :native
+      test unquote(name) <> " [native]" do
+        var!(predict_opts) = [
+          compiler: Emily.Compiler,
+          native: true,
+          native_fallback: :raise
+        ]
+
+        unquote(body)
+      end
+
+      @tag :native_compiled
+      test unquote(name) <> " [native_compiled]" do
+        var!(predict_opts) = [
+          compiler: Emily.Compiler,
+          native: true,
+          native_fallback: :raise,
+          native_compiled: true
+        ]
+
+        unquote(body)
       end
     end
   end

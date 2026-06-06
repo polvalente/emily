@@ -33,7 +33,7 @@ defmodule Emily.Conformance.DistilbertTest do
 
   use ExUnit.Case, async: false
 
-  import Emily.ConformanceHelper, only: [assert_all_close: 2, assert_all_close: 3]
+  import Emily.ConformanceHelper, only: [assert_all_close: 2, assert_all_close: 3, mode_test: 2]
 
   alias Emily.Bumblebee.FastKernels
 
@@ -52,7 +52,7 @@ defmodule Emily.Conformance.DistilbertTest do
     :ok
   end
 
-  test ":base" do
+  mode_test ":base" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model({:hf, "hf-internal-testing/tiny-random-DistilBertModel"})
 
@@ -63,7 +63,7 @@ defmodule Emily.Conformance.DistilbertTest do
       "attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.hidden_state) == {1, 10, 32}
 
@@ -75,7 +75,7 @@ defmodule Emily.Conformance.DistilbertTest do
     )
   end
 
-  test ":for_masked_language_modeling" do
+  mode_test ":for_masked_language_modeling" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model({:hf, "hf-internal-testing/tiny-random-DistilBertForMaskedLM"})
 
@@ -86,7 +86,7 @@ defmodule Emily.Conformance.DistilbertTest do
       "attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 10, 1124}
 
@@ -98,7 +98,7 @@ defmodule Emily.Conformance.DistilbertTest do
     )
   end
 
-  test ":for_sequence_classification" do
+  mode_test ":for_sequence_classification" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model(
                {:hf, "hf-internal-testing/tiny-random-DistilBertForSequenceClassification"}
@@ -111,14 +111,14 @@ defmodule Emily.Conformance.DistilbertTest do
       "attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 2}
 
     assert_all_close(outputs.logits, Nx.tensor([[-0.0047, -0.0103]]))
   end
 
-  test ":for_token_classification" do
+  mode_test ":for_token_classification" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model(
                {:hf, "hf-internal-testing/tiny-random-DistilBertForTokenClassification"}
@@ -131,7 +131,7 @@ defmodule Emily.Conformance.DistilbertTest do
       "attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 10, 2}
 
@@ -141,7 +141,7 @@ defmodule Emily.Conformance.DistilbertTest do
     )
   end
 
-  test ":for_question_answering" do
+  mode_test ":for_question_answering" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model(
                {:hf, "hf-internal-testing/tiny-random-DistilBertForQuestionAnswering"}
@@ -154,7 +154,7 @@ defmodule Emily.Conformance.DistilbertTest do
       "attention_mask" => Nx.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.start_logits) == {1, 10}
     assert Nx.shape(outputs.end_logits) == {1, 10}
@@ -170,7 +170,7 @@ defmodule Emily.Conformance.DistilbertTest do
     )
   end
 
-  test ":for_multiple_choice" do
+  mode_test ":for_multiple_choice" do
     assert {:ok, %{model: model, params: params, spec: spec}} =
              Bumblebee.load_model(
                {:hf, "hf-internal-testing/tiny-random-DistilBertForMultipleChoice"}
@@ -183,7 +183,7 @@ defmodule Emily.Conformance.DistilbertTest do
       "attention_mask" => Nx.tensor([[[1, 1, 1, 1, 1, 1, 1, 1, 0, 0]]])
     }
 
-    outputs = Axon.predict(model, params, inputs)
+    outputs = Axon.predict(model, params, inputs, predict_opts)
 
     assert Nx.shape(outputs.logits) == {1, 1}
 
