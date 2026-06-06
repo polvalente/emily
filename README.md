@@ -191,16 +191,16 @@ Nx.Defn.global_default_options(compiler: Emily.Compiler)
 Bumblebee inference works with no further configuration once the
 backend is installed — see the conformance suites under
 `test/emily/conformance/` for worked DistilBERT, Qwen3, ViT, and
-Whisper pipelines, and the Notebooks section of the HexDocs nav for
+Whisper pipelines, and the Livebooks section of the HexDocs nav for
 runnable Livebooks.
 
 The low-level tensor API (`Emily.from_binary/3`, `to_binary/1`,
 `shape/1`, `dtype/1`, `eval/1`) remains available for diagnostics
 and direct MLX round-trips, but most users should go through Nx.
 
-## Notebooks
+## Livebooks
 
-End-to-end Livebooks under `notebooks/`. Each one declares its own
+End-to-end Livebooks under `livebooks/`. Each one declares its own
 `Mix.install/2` block and pins `Emily.Backend` as the default Nx
 backend, so they're self-contained — open in Livebook and run.
 
@@ -339,8 +339,8 @@ caller-facing API; the only difference is whether the calling
 process wraps the call in `Emily.Stream.with_stream/2` and whether
 you run one serving or many.
 
-See `Emily.Stream` for the API and the `qwen3_quantized` notebook
-under Notebooks for a worked multi-stream example.
+See `Emily.Stream` for the API and the `qwen3_quantized` livebook
+under Livebooks for a worked multi-stream example.
 
 ## Observability
 
@@ -438,7 +438,7 @@ be introduced in the layer where its test fails.
 ## Documentation
 
   * [HexDocs](https://hexdocs.pm/emily) — per-module API docs and
-    runnable notebooks.
+    runnable livebooks.
   * [`ARCHITECTURE.md`](ARCHITECTURE.md) — current shape of the
     library: layer boundaries, design decisions, concurrency and
     memory model, observability surface.

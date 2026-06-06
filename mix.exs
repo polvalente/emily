@@ -230,14 +230,14 @@ defmodule Emily.MixProject do
         "ARCHITECTURE.md",
         "ROADMAP.md",
         "CHANGELOG.md",
-        "notebooks/distilbert_qa.livemd",
-        "notebooks/qwen3_quantized.livemd",
-        "notebooks/nomic_embeddings.livemd",
-        "notebooks/smollm3_chat.livemd",
-        "notebooks/modernbert_classification.livemd",
-        "notebooks/mnist_training.livemd",
-        "notebooks/whisper_transcription.livemd",
-        "notebooks/fast_kernels.livemd"
+        "livebooks/distilbert_qa.livemd",
+        "livebooks/qwen3_quantized.livemd",
+        "livebooks/nomic_embeddings.livemd",
+        "livebooks/smollm3_chat.livemd",
+        "livebooks/modernbert_classification.livemd",
+        "livebooks/mnist_training.livemd",
+        "livebooks/whisper_transcription.livemd",
+        "livebooks/fast_kernels.livemd"
       ],
       groups_for_extras: [
         README: ~r{README.md},
@@ -246,7 +246,7 @@ defmodule Emily.MixProject do
           "ROADMAP.md",
           "CHANGELOG.md"
         ],
-        Notebooks: ~r{^notebooks/}
+        Livebooks: ~r{^livebooks/}
       ],
       groups_for_modules: [
         Core: [Emily, Emily.Backend, Emily.Compiler],
