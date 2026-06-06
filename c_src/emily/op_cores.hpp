@@ -194,6 +194,29 @@ inline mx::array window_reduce_core(
   std::vector<int64_t> out_dims;
   auto view =
       sliding_windows_view(padded, window_shape, strides, dilations, out_dims, s);
+
+  // Dilated windows give the kernel axes an `as_strided` stride > 1, so the
+  // view aliases fewer physical elements than its logical size (overlapping
+  // strides). MLX's reduction then picks a strided fast path
+  // (GeneralStridedReduce) that assumes a dense, non-overlapping layout and
+  // reads `product(shape)` contiguous elements — over-running the buffer and
+  // returning garbage for windows past the first stride positions (issue
+  // #175). Materialise the view first: the general copy reads element-by-
+  // element via the real strides (always in-bounds, since the last window's
+  // last tap is the last real element), yielding a dense buffer the reducer
+  // can safely fast-path. Only dilated windows need this; the common
+  // (non-dilated) pooling path keeps its copy-free strided reduce.
+  bool dilated = false;
+  for (int64_t d : dilations) {
+    if (d > 1) {
+      dilated = true;
+      break;
+    }
+  }
+  if (dilated) {
+    view = mx::contiguous(view, /*allow_col_major=*/false, s);
+  }
+
   int rank = static_cast<int>(window_shape.size());
   std::vector<int> reduce_axes(rank);
   for (int i = 0; i < rank; ++i)

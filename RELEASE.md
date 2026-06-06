@@ -157,3 +157,15 @@
   tensor-offset `fast_rope/8`. Note: feed the kernel the 4-D
   `{batch, heads, seq, head_dim}` layout — in 3-D, MLX 0.31 mis-rotates
   single-token (`seq == 1`) inputs.
+
+### Fixed
+
+- **Dilated window reductions (`window_dilations > 1`) returned wrong values.**
+  `window_sum`/`window_max`/`window_min`/`window_product` with a dilated kernel
+  silently produced garbage for windows past the first stride positions, on both
+  the eager backend and the native compiler (they share the window-reduce core).
+  A dilated kernel axis gets an `as_strided` stride > 1, so the sliding-window
+  view aliases fewer physical elements than its logical size; MLX's strided-reduce
+  fast path then read past the aliased buffer. The view is now materialised
+  contiguously before the reduce when any dilation > 1 (the common non-dilated
+  pooling path is unchanged and stays copy-free).

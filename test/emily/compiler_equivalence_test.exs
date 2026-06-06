@@ -425,6 +425,19 @@ defmodule Emily.CompilerEquivalenceTest do
 
       assert_equiv(fn t -> Nx.window_product(t, {1, 2}, strides: [1, 1]) end, [x])
     end
+
+    test "dilated windows match (issue #175)" do
+      # Tiny input + dilation 2 on the inner axis: the sliding-window view
+      # over-reads its aliased buffer unless materialised before the reduce.
+      # Pre-fix the native path returned garbage here while the Evaluator
+      # returned a deterministic 0.0, so the two diverged.
+      x =
+        Nx.iota({1, 8}, type: :f32, backend: Emily.Backend) |> Nx.divide(8.0) |> Nx.add(1.0)
+
+      assert_equiv(fn t -> Nx.window_max(t, {1, 3}, window_dilations: [1, 2]) end, [x])
+      assert_equiv(fn t -> Nx.window_sum(t, {1, 3}, window_dilations: [1, 2]) end, [x])
+      assert_equiv(fn t -> Nx.window_min(t, {1, 3}, window_dilations: [1, 2]) end, [x])
+    end
   end
 
   describe "window scatter (pooling backward)" do
