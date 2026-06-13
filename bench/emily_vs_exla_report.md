@@ -43,7 +43,7 @@ Emily's losses below are coverage gaps; they are all kernel/dispatch efficiency.
 | Date | 2026-06-07 |
 | Host | Apple M4 Pro, 12 cores, 24GB memory |
 | Elixir / OTP | 1.19.5 / 28 |
-| Emily | 0.6.1 (local checkout, AOT MLX variant) |
+| Emily | 0.7.0 (local checkout, AOT MLX variant) |
 | EXLA / XLA | 0.12.0 / 0.10.0 (host / CPU client) |
 | Nx | 0.12.1 |
 

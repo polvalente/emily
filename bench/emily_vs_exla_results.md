@@ -10,7 +10,7 @@ higher is better for tokens/sec. Ratios are relative to the EXLA lane._
 | date | 2026-06-07 10:09 |
 | host | Apple M4 Pro (BEAM total 112 MB at write) |
 | elixir / otp | 1.19.5 / 28 |
-| emily | 0.6.1 |
+| emily | 0.7.0 |
 | exla | 0.12.0 (host (1 device)) |
 | nx | 0.12.1 |
 | smoke run? | false |
