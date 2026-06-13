@@ -208,6 +208,7 @@ defmodule Emily.MixProject do
     [
       main: "readme",
       source_url_pattern: "#{@source_url}/blob/#{@version}/%{path}#L%{line}",
+      before_closing_head_tag: &before_closing_head_tag/1,
       # Symbols ExDoc can't link, so it warns on every reference to them.
       # Listed explicitly on purpose: the `mix precommit` docs gate fails
       # with the exact unlinkable symbol when a new one appears, making each
@@ -265,6 +266,18 @@ defmodule Emily.MixProject do
       ]
     ]
   end
+
+  # ex_doc renders a "Run in Livebook" badge on every `.livemd` extra
+  # (extra_template.eex) with no option to suppress it. Emily's NIF is
+  # macOS / Apple-Silicon only, and the badge's `livebook.dev/run` target
+  # fails to open on the hosted (Linux) Livebooks most visitors reach, so
+  # we hide it — each livebook links to its GitHub source/download instead.
+  # `!important` is required to beat ex_doc's more specific
+  # `.content-inner .livebook-badge-container { display: flex }` rule.
+  defp before_closing_head_tag(:html),
+    do: ~s(<style>.livebook-badge-container{display:none!important}</style>)
+
+  defp before_closing_head_tag(_), do: ""
 
   defp package do
     [

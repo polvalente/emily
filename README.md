@@ -320,6 +320,13 @@ End-to-end Livebooks under `livebooks/`. Each one declares its own
 `Mix.install/2` block and pins `Emily.Backend` as the default Nx
 backend, so they're self-contained — open in Livebook and run.
 
+> **Requires Apple Silicon + macOS 14+** (MLX / Metal) — these
+> notebooks won't run on Linux or Intel hosts, including the hosted
+> Livebooks a "Run in Livebook" badge would open. To get a copy, open
+> its page in the Livebooks section of these docs and use the **View
+> Source** link (top-right) to view or download the `.livemd` from
+> GitHub, then run it in Livebook on a Mac.
+
 - **`distilbert_qa.livemd`** — question answering with
   `distilbert-base-uncased-distilled-squad`.
 - **`qwen3_quantized.livemd`** — Qwen3-0.6B int4-quantized via the
