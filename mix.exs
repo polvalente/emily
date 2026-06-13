@@ -209,6 +209,7 @@ defmodule Emily.MixProject do
       main: "readme",
       source_url_pattern: "#{@source_url}/blob/#{@version}/%{path}#L%{line}",
       before_closing_head_tag: &before_closing_head_tag/1,
+      before_closing_body_tag: &before_closing_body_tag/1,
       # Symbols ExDoc can't link, so it warns on every reference to them.
       # Listed explicitly on purpose: the `mix precommit` docs gate fails
       # with the exact unlinkable symbol when a new one appears, making each
@@ -234,6 +235,8 @@ defmodule Emily.MixProject do
         "ARCHITECTURE.md",
         "ROADMAP.md",
         "CHANGELOG.md",
+        "bench/emily_vs_exla_report.md",
+        "bench/emily_vs_exla_results.md",
         "livebooks/distilbert_qa.livemd",
         "livebooks/qwen3_quantized.livemd",
         "livebooks/nomic_embeddings.livemd",
@@ -249,6 +252,10 @@ defmodule Emily.MixProject do
           "ARCHITECTURE.md",
           "ROADMAP.md",
           "CHANGELOG.md"
+        ],
+        Performance: [
+          "bench/emily_vs_exla_report.md",
+          "bench/emily_vs_exla_results.md"
         ],
         Livebooks: ~r{^livebooks/}
       ],
@@ -278,6 +285,48 @@ defmodule Emily.MixProject do
     do: ~s(<style>.livebook-badge-container{display:none!important}</style>)
 
   defp before_closing_head_tag(_), do: ""
+
+  defp before_closing_body_tag(:html) do
+    """
+    <script>
+      let mermaidInitialized = false;
+      let mermaidGraphId = 0;
+
+      window.__emilyRenderMermaid = () => {
+        if (!window.mermaid) {
+          return;
+        }
+
+        if (!mermaidInitialized) {
+          mermaid.initialize({
+            startOnLoad: false,
+            theme: document.body.className.includes("dark") ? "dark" : "default"
+          });
+          mermaidInitialized = true;
+        }
+
+        for (const codeEl of document.querySelectorAll("pre code.mermaid")) {
+          const preEl = codeEl.parentElement;
+          const graphDefinition = codeEl.textContent;
+          const graphEl = document.createElement("div");
+          const graphId = "mermaid-graph-" + mermaidGraphId++;
+
+          mermaid.render(graphId, graphDefinition).then(({svg, bindFunctions}) => {
+            graphEl.innerHTML = svg;
+            bindFunctions?.(graphEl);
+            preEl.insertAdjacentElement("afterend", graphEl);
+            preEl.remove();
+          });
+        }
+      };
+
+      window.addEventListener("exdoc:loaded", window.__emilyRenderMermaid);
+    </script>
+    <script defer src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js" onload="window.__emilyRenderMermaid && window.__emilyRenderMermaid()"></script>
+    """
+  end
+
+  defp before_closing_body_tag(_), do: ""
 
   defp package do
     [
